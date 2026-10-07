@@ -21,8 +21,8 @@ The public tree was prepared from two zipped development directories: the Decal/
 | DAT test utility using hard-coded development paths | EXCLUDE | Superseded by direct DAT reader in current Manager |
 | Nested `.git` directories | EXCLUDE | Dependency history is not embedded in the project repository |
 | `DarkMode_v1.acui` | NEEDS REVIEW | Omitted until all texture asset redistribution rights are confirmed |
-| Project icon (`ACCustoms.ico`) | NEEDS REVIEW BEFORE FIRST PUBLISH | Included because it is a build/resource input; confirm that the artwork is project-owned/redistributable |
-| Root MIT copyright holder wording | NEEDS REVIEW BEFORE FIRST PUBLISH | Currently uses `AC Customs contributors`; maintainer may replace with a personal/project legal name |
+| Project icon (`ACCustoms.ico`) | NEEDS REVIEW | Included because it is a build/resource input; confirm that the artwork is project-owned/redistributable |
+| Root MIT copyright holder wording | NEEDS REVIEW | Currently uses `AC Customs contributors`; maintainer may replace with a personal/project legal name |
 
 ## Secret/credential scan
 

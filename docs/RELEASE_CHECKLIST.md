@@ -25,7 +25,7 @@ Verify:
 - [ ] `artifacts\manager\ACModernUIManager.exe` builds.
 - [ ] `artifacts\manager\ACModernUIConverter.exe` builds and sits beside the Manager.
 - [ ] `artifacts\manager\Defaults` contains both default text files.
-- [ ] Snapshot viewer builds.
+
 
 ## Runtime smoke test
 

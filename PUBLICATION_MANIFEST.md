@@ -49,7 +49,7 @@ MinHook's development working tree appeared dirty due broad line-ending changes.
 
 The old converter path still expected `C:\ACModernUI-Dev\dat_textures.csv` even though the current Manager already reads `client_portal.dat` directly. The public tree adds an explicit converter `replace` command: the Manager passes DID, dimensions, byte size, pixel format, input PNG, and destination path directly. This removes that stale development-directory dependency from the supported replacement workflow while leaving the historical converter preview modes available for developers.
 
-## Before the first public push
+## Outstanding maintainer review
 
 Two non-code details should get a maintainer sign-off:
 
