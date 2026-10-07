@@ -1,0 +1,113 @@
+0600251F	Fellowship bar
+0600193E	Small target hp bar near the backpack
+0600251E	Fellowship bar
+0600193F	Small target hp bar near the backpack
+06007123	dirty fighting
+0600209D	weapon tinkering
+0600747F	Primary Health Bar
+0600740C	summoning
+0600015D	recklessness
+06007129	sneak attack
+06001366	leadership
+06004C83	Default
+06000170	mana conversion
+0600209A	armor tinkering
+060002C7	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+0600209F	assess person
+0600209E	assess creature
+060022D6	Small target hp bar near the backpack
+0600209C	magic item tinkering
+060002C5	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+0600209B	item tinkering
+060002C4	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+06007127	light weapons
+06000164	missile defense
+06007126	heavy weapons
+0600251C	Fellowship bar
+06007125	finesse weapons
+06007124	dual wield
+06007128	shield
+06004C3D	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+06004C40	Top left arrow
+06000133	healing
+06007482	Primary Health Bar
+060035AE	salvage
+060002C9	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+06006A01	gear crafting. deprecated
+06001367	loyalty
+0600015F	missile weapons
+06002521	Fellowship bar
+06004C3B	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+06004CF6	stack bar
+060022D5	Small target hp bar near the backpack
+06005DC3	stack slider
+060002C6	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+060002C8	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+06002520	Fellowship bar
+06004C3C	Textures must be 25x25 but AC draws only 20x20 starting from the top left corner
+06001354	Jump bar
+06004D67	Chat caret /insertion line / text cursor
+0600747E	Primary Health Bar
+06007488	Primary Stam Bar
+06004C41	Top right arrow
+06007483	Primary Health Bar
+06004C42	Bottom left arrow
+06007480	Primary Health Bar
+06004C43	Bottom right arrow
+06007481	Primary Health Bar
+06004C44	Indicators that appear on the edges of the screen
+06007486	Primary Stam Bar
+0600251D	Fellowship bar
+06007484	Primary Stam Bar
+06007485	Primary Stam Bar
+06007487	Primary Stam Bar
+06007489	Primary Stam Bar
+0600748A	Primary Mana Bar
+0600748B	Primary Mana Bar
+0600748C	Primary Mana Bar
+0600748D	Primary Mana Bar
+0600748E	Primary Mana Bar
+0600748F	Primary Mana Bar
+06006A00	2hand
+06001365	war magic
+06000F8A	Skill xp bar at bottom of panel
+06004C81	Left Side. OnHover
+06000F93	Selected skill
+06000F89	Unusable skills
+06004C82	Left Side. OnClick
+06000F90	Specialized skills
+06000F86	Trained Skills
+06000F98	Untrained Skills
+06004C6C	Default
+06004C6D	On Hover
+06004C6E	Click
+06004C69	Default
+06004C79	Default
+06004C7C	Default
+06004C6A	On Hover
+06004C7A	On Hover
+06004C7D	On Hover
+06004C8A	On Hover
+06004C8D	On Hover
+06004C65	On Click
+06004C6B	On Click
+06004C7B	On Click
+06004C7E	On Click
+06004C85	On Click
+06004C8B	On Click
+06004C8E	On Click
+06004C64	On Hover
+06004C84	On Hover
+06004C63	Default
+06004C89	Default
+06004C8C	Default
+06004C67	Bottom Tip. On Hover
+06004C60	Top tip. Default
+06004C61	Top tip. On Hover
+06004C62	Top tip. On Click
+06004C66	Bottom Tip. Default
+06004C68	Bottom Tip. On Click
+06004C86	Right Side. Default
+06004C87	Right Side. OnHover
+06004C88	Right Side. OnClick
+06004C80	Left Side. Default

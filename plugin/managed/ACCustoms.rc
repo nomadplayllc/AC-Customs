@@ -1,0 +1,2 @@
+#define IDI_ACCUSTOMS 101
+IDI_ACCUSTOMS ICON "ACCustoms.ico"

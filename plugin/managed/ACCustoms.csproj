@@ -1,0 +1,78 @@
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
+    <ProjectGuid>{CFD17FB2-685B-4FD4-9D2C-83408A495F3C}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>ACCustoms</RootNamespace>
+    <AssemblyName>ACCustoms</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Win32Resource>ACCustoms.res</Win32Resource>
+
+    <!--
+      DecalDir is a build-time dependency location only.
+      build_managed.cmd discovers the installed Decal directory and supplies it.
+      There is deliberately no machine-specific fallback path here.
+    -->
+    <DecalAdapterPath Condition=" '$(DecalDir)' != '' ">$(DecalDir)\Decal.Adapter.dll</DecalAdapterPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <PlatformTarget>x86</PlatformTarget>
+    <Prefer32Bit>true</Prefer32Bit>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <PlatformTarget>x86</PlatformTarget>
+    <Prefer32Bit>true</Prefer32Bit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Windows.Forms" />
+
+    <!-- Decal supplies this assembly at runtime; do not copy/package our own copy. -->
+    <Reference Include="Decal.Adapter">
+      <HintPath>$(DecalAdapterPath)</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="PluginCore.cs" />
+    <Compile Include="NativeBridge.cs" />
+    <Compile Include="PackManager.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="mainView.xml">
+      <LogicalName>ACCustoms.mainView.xml</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Target Name="ValidateDecalAdapter" BeforeTargets="ResolveAssemblyReferences">
+    <Error
+      Condition=" '$(DecalDir)' == '' "
+      Text="DecalDir was not supplied. Build this project through build_managed.cmd so the Decal installation is discovered automatically." />
+    <Error
+      Condition=" '$(DecalDir)' != '' and !Exists('$(DecalAdapterPath)') "
+      Text="Decal.Adapter.dll was not found at '$(DecalAdapterPath)'. Install Decal 3.0 or run build_managed.cmd after correcting the Decal installation." />
+  </Target>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

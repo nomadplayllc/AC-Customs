@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible AC Customs problem
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Decal plugin
+        - Native runtime / theme Apply-Restore
+        - UI Manager
+        - Live Mirror / Live UI Editor
+        - ACUI import/export
+        - Build tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Include whether AC was Vanilla or a pack was active.
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: AC Customs commit/build
+  - type: input
+    id: client
+    attributes:
+      label: AC client build/version (if known)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs/snapshot details
+      description: Remove private or unrelated information before posting.

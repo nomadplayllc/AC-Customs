@@ -1,0 +1,53 @@
+# Visual Studio / MSBuild
+.vs/
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x86/
+x64/
+*.user
+*.suo
+*.VC.db
+*.opendb
+
+# Native build products
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.res
+
+# Repository build output
+artifacts/
+
+# Local build discovery/cache
+.build_decal_adapter_path.txt
+
+# Development backups / scratch
+*.bak
+*.tmp
+*.old
+*~
+
+# Runtime/debug output
+*.log
+log.txt
+imgui.ini
+ac_customs_imgui.ini
+ui_snapshot_*.json
+control_state_links_*.json
+encountered_textures.csv
+dat_textures.csv
+
+# Generated preview/capture workspaces
+captured/
+textures/
+dat_previews/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<view icon="8712" title="AC Customs" width="360" height="326">
+  <control progid="DecalControls.FixedLayout" clipped="">
+    <!-- Current runtime state -->
+    <control progid="DecalControls.StaticText"
+             name="CurrentUiText"
+             left="8" top="10" width="344" height="26"
+             textcolor="0"
+             fontface="Arial" fontsize="15" fontstyle="bold"
+             justify="Center"
+             text="Current UI: AC Default" />
+
+    <!-- Theme selection -->
+    <control progid="DecalControls.StaticText"
+             name="ThemeLabel"
+             left="8" top="46" width="344" height="18"
+             textcolor="0"
+             fontface="Arial" fontsize="12" fontstyle="bold"
+             text="INSTALLED UI PACKS" />
+
+    <control progid="DecalControls.Choice"
+             name="ThemeChoice"
+             left="8" top="66" width="344" height="24" />
+
+    <control progid="DecalControls.PushButton"
+             name="ImportPack"
+             left="8" top="98" width="132" height="28"
+             textcolor="16777215"
+             fontface="Arial" fontsize="12" fontstyle="bold"
+             text="Import UI Pack..." />
+
+    <control progid="DecalControls.PushButton"
+             name="ApplyTheme"
+             left="148" top="98" width="204" height="28"
+             textcolor="16777215"
+             fontface="Arial" fontsize="12" fontstyle="bold"
+             text="Apply Theme" />
+
+    <control progid="DecalControls.PushButton"
+             name="RestoreVanilla"
+             left="8" top="134" width="344" height="28"
+             textcolor="16777215"
+             fontface="Arial" fontsize="12" fontstyle="bold"
+             text="Restore Default" />
+
+    <!-- Beta safety notes -->
+    <control progid="DecalControls.StaticText"
+             name="SafetyText"
+             left="10" top="176" width="340" height="34"
+             fontface="Arial" fontsize="13"
+             justify="Center"
+             text="AC launches in Vanilla UI by default to avoid potential conflicts." />
+
+    <control progid="DecalControls.StaticText"
+             name="RestartText"
+             left="10" top="214" width="340" height="34"
+             fontface="Arial" fontsize="13" fontstyle="bold"
+             justify="Center"
+             text="Close and restart AC if you have problems loading custom UIs." />
+
+    <!-- Notifications and errors stay at the bottom of the plugin UI. -->
+    <control progid="DecalControls.StaticText"
+             name="StatusLabel"
+             left="8" top="260" width="344" height="18"
+             textcolor="0"
+             fontface="Arial" fontsize="11" fontstyle="bold"
+             text="STATUS" />
+
+    <control progid="DecalControls.StaticText"
+             name="StatusText"
+             left="8" top="280" width="344" height="38"
+             textcolor="0"
+             fontface="Arial" fontsize="12"
+             justify="Center"
+             text="Starting..." />
+  </control>
+</view>
