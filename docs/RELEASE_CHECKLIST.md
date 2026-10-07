@@ -53,3 +53,17 @@ Recommended repository settings:
 Keep source control and release binaries separate. A release package for end users should contain only what users need, while GitHub automatically provides source archives for each tag.
 
 Do not commit release EXEs/DLLs into the repository merely to make them downloadable; attach them to GitHub Releases instead.
+
+## VVS interface migration — required Windows checks
+
+Windows compilation and initial in-game testing passed. Use the following checks for release validation:
+
+- Build Release x86 against installed Decal and VVS assemblies.
+- With VVS enabled and Decal Disable View Rendering checked, open AC Customs from the VVS bar and verify all labels, the selector, and all three buttons are visible and usable.
+- Repeat with Disable View Rendering unchecked; only one AC Customs window should exist.
+- Check long pack names, status wrapping, light/dark VVS themes, and the custom icon.
+- Test no installed packs, import cancellation, import success, overwrite cancellation, and replacing an active pack.
+- Confirm selecting a pack does not apply it; confirm Apply, cooldown, pack A to B, and Restore Default.
+- Restart AC: vanilla remains active and the previous pack selection is remembered.
+- Log out/in and unload/reload: no duplicate events, stale windows, or crashes.
+- Test VVS starting after AC Customs, and missing/disabled VVS; installation errors must be understandable.

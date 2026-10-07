@@ -36,6 +36,7 @@ Requirements:
 - Visual Studio 2022 with **Desktop development with C++** and a Windows SDK.
 - .NET Framework 4.8 developer tooling.
 - Decal 3.0 installed to build the managed plugin (`Decal.Adapter.dll` is referenced from the local Decal installation and is not redistributed here).
+- Virindi View Service (VVS), supplied by the Virindi Plugin Bundle, installed for building and enabled for runtime use.
 - A 32-bit Asheron's Call client installation for runtime use and Manager DAT browsing.
 
 From a normal Command Prompt:
@@ -61,6 +62,12 @@ scripts\register_plugin.cmd
 ```
 
 See [docs/BUILDING.md](docs/BUILDING.md) for component-by-component instructions and troubleshooting.
+
+## In-game interface
+
+AC Customs now requires **Virindi View Service (VVS)**. Install the Virindi Plugin Bundle and enable **Virindi View Service** under Decal's Services, then restart AC. Open AC Customs from the VVS bar.
+
+The window, pack selector, and Import / Apply / Restore buttons use VVS. Decal's **Disable View Rendering** option can remain checked. There is no fallback to native Decal windows. The standalone UI Manager does not require VVS.
 
 ## Runtime data
 

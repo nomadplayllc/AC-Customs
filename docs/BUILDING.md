@@ -11,6 +11,7 @@ Install on Windows:
 3. A Windows 10/11 SDK that provides `rc.exe`.
 4. .NET Framework 4.8 developer/targeting tools.
 5. Decal 3.0 for `Decal.Adapter.dll` when compiling the managed plugin.
+6. Virindi Plugin Bundle for `VirindiViewService.dll`.
 
 The game client/DAT is not needed merely to compile the code, but is required to exercise the Manager and runtime.
 
@@ -53,11 +54,13 @@ The script:
 
 1. Locates MSBuild.
 2. Locates `rc.exe` and generates `plugin\managed\ACCustoms.res` from the checked-in `.rc` + `.ico` sources.
-3. Locates the developer's installed `Decal.Adapter.dll`.
+3. Locates the developer's installed `Decal.Adapter.dll` and `VirindiViewService.dll`.
 4. Builds `Release|x86` against .NET Framework 4.8.
 5. Copies the resulting assembly to `artifacts\plugin`.
 
-`Decal.Adapter.dll` is referenced with `Private=False`; it is not copied into AC Customs artifacts.
+`Decal.Adapter.dll` and `VirindiViewService.dll` are referenced with `Private=False`; neither is copied into AC Customs artifacts.
+
+For a nonstandard VVS installation, set `VVS_DIR` to the directory containing `VirindiViewService.dll` before running the script. For direct MSBuild invocation, pass `/p:VvsDir="path"` alongside `/p:DecalDir="path"`.
 
 The script caches the locally discovered Decal adapter path in `.build_decal_adapter_path.txt`, which is gitignored.
 

@@ -1,46 +1,48 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using VirindiViewService;
+using VirindiViewService.Controls;
 using System.Runtime.InteropServices;
 using Decal.Adapter;
-using Decal.Adapter.Wrappers;
 
 namespace ACCustoms
 {
     [WireUpBaseEvents]
-    [FriendlyName("AC Customs"), View("ACCustoms.mainView.xml")]
+    [FriendlyName("AC Customs")]
     public sealed class PluginCore : PluginBase
     {
         private static readonly TimeSpan ApplyCooldown = TimeSpan.FromSeconds(3);
-        private const int RequiredViewWidth = 380;
-        private const int RequiredViewHeight = 374;
         private const int CustomIconResourceId = 101;
 
         private DateTime lastChangeUtc = DateTime.MinValue;
         private bool nativeReady;
-        private bool viewSizeEnsured;
+        private HudView view;
+        private HudButton ImportPack;
+        private HudButton RestoreVanilla;
+        private DateTime nextViewAttemptUtc;
+        private bool viewFailed;
+        private string status = "Starting...";
         private bool suppressThemeEvents;
         private string activePackInstallId = String.Empty;
         private List<InstalledPack> installedPacks = new List<InstalledPack>();
 
-        [ControlReference("CurrentUiText")]
-        private StaticWrapper CurrentUiText = null;
+        private HudStaticText CurrentUiText = null;
 
-        [ControlReference("StatusText")]
-        private StaticWrapper StatusText = null;
+        private HudStaticText StatusText = null;
+        private HudStaticText StatusTextLine2 = null;
+        private HudStaticText StatusTextLine3 = null;
 
-        [ControlReference("ThemeChoice")]
-        private ChoiceWrapper ThemeChoice = null;
+        private HudCombo ThemeChoice = null;
 
-        [ControlReference("ApplyTheme")]
-        private PushButtonWrapper ApplyTheme = null;
+        private HudButton ApplyTheme = null;
 
         protected override void Startup()
         {
             try
             {
-                EnsureViewSize();
-                TryApplyCustomViewIcon();
+                Core.RenderFrame += Core_RenderFrame;
                 PackManager.EnsureDirectories();
 
                 nativeReady = NativeBridge.Initialize();
@@ -61,7 +63,6 @@ namespace ACCustoms
                 RefreshInstalledPacks(PackManager.LoadLastSelectedInstallId());
                 UpdateCurrentUiText();
 
-                Core.RenderFrame += Core_RenderFrame;
                 SetStatus(nativeReady
                     ? BuildReadyStatus()
                     : "Native engine failed to initialize");
@@ -76,31 +77,66 @@ namespace ACCustoms
         protected override void Shutdown()
         {
             try { Core.RenderFrame -= Core_RenderFrame; } catch { }
+            try { DisposeView(); } catch { }
             try { NativeBridge.Shutdown(); } catch { }
+        }
+
+        [BaseEvent("LoginComplete", "CharacterFilter")]
+        private void CharacterFilter_LoginComplete(object sender, EventArgs e)
+        {
+            try
+            {
+                if (view == null)
+                    Host.Actions.AddChatText("AC Customs: waiting for its VVS window. Ensure Virindi View Service is installed and enabled in Decal Services; restart AC after enabling it.", 3);
+            }
+            catch { }
         }
 
         private void SetStatus(string text)
         {
-            if (StatusText != null)
-                StatusText.Text = text ?? String.Empty;
+            status = text ?? String.Empty;
+            UpdateStatusText();
+        }
+
+        private void UpdateStatusText()
+        {
+            if (StatusText == null) return;
+            // VVS static labels are single-line. Use explicit rows instead of
+            // depending on native Decal's multiline layout behavior.
+            HudStaticText[] rows = { StatusText, StatusTextLine2, StatusTextLine3 };
+            string remaining = status.Replace("\r", " ").Replace("\n", " ").Trim();
+            for (int i = 0; i < rows.Length; i++)
+            {
+                int length = Math.Min(44, remaining.Length);
+                if (remaining.Length > length && i < rows.Length - 1)
+                {
+                    int space = remaining.LastIndexOf(' ', length - 1, length);
+                    if (space > 0) length = space;
+                }
+                string line = remaining.Substring(0, length);
+                remaining = remaining.Substring(length).TrimStart();
+                if (i == rows.Length - 1 && remaining.Length > 0)
+                    line = line.Substring(0, Math.Min(41, line.Length)) + "...";
+                if (rows[i] != null) rows[i].Text = line;
+            }
         }
 
         private void TryApplyCustomViewIcon()
         {
             // Keep the numeric icon in mainView.xml as the safe load-time fallback.
-            // Once the classic Decal view exists, replace it from a native ICON
+            // Once the VVS view exists, replace it from a native ICON
             // resource embedded in ACCustoms.dll. Any failure is deliberately
             // swallowed so icon handling can never prevent the plugin UI loading.
             try
             {
-                if (DefaultView == null)
+                if (view == null)
                     return;
 
                 IntPtr moduleHandle = Marshal.GetHINSTANCE(typeof(PluginCore).Module);
                 if (moduleHandle == IntPtr.Zero || moduleHandle == new IntPtr(-1))
                     return;
 
-                DefaultView.SetIcon(CustomIconResourceId, unchecked((int)moduleHandle.ToInt64()));
+                view.Icon = ACImage.FromIconLibrary(CustomIconResourceId, unchecked((int)moduleHandle.ToInt64()));
             }
             catch
             {
@@ -153,8 +189,8 @@ namespace ACCustoms
                 // a UI update to affect plugin operation.
             }
 
-            if (currentName.Length > 34)
-                currentName = currentName.Substring(0, 31) + "...";
+            if (currentName.Length > 30)
+                currentName = currentName.Substring(0, 27) + "...";
 
             CurrentUiText.Text = "Current UI: " + currentName;
         }
@@ -174,33 +210,88 @@ namespace ACCustoms
             return true;
         }
 
-        private void EnsureViewSize()
+        private void CreateView()
         {
-            try
-            {
-                if (DefaultView == null)
-                    return;
+            ViewProperties properties;
+            ControlGroup controls;
+            // Read explicitly so resource lookup does not depend on the calling assembly.
+            using (Stream stream = typeof(PluginCore).Assembly.GetManifestResourceStream("ACCustoms.mainView.xml"))
+            using (StreamReader reader = new StreamReader(stream))
+                new VirindiViewService.XMLParsers.Decal3XMLParser().Parse(reader.ReadToEnd(), out properties, out controls);
 
-                Rectangle current = DefaultView.Position;
-                int width = Math.Max(current.Width, RequiredViewWidth);
-                int height = Math.Max(current.Height, RequiredViewHeight);
-                if (current.Width != width || current.Height != height)
-                    DefaultView.Position = new Rectangle(current.X, current.Y, width, height);
+            view = new HudView(properties, controls, "ACCustoms.Main");
+            view.ClientArea = new Size(420, 374);
+            CurrentUiText = (HudStaticText)view["CurrentUiText"];
+            StatusText = (HudStaticText)view["StatusText"];
+            StatusTextLine2 = (HudStaticText)view["StatusTextLine2"];
+            StatusTextLine3 = (HudStaticText)view["StatusTextLine3"];
+            ThemeChoice = (HudCombo)view["ThemeChoice"];
+            ApplyTheme = (HudButton)view["ApplyTheme"];
+            ImportPack = (HudButton)view["ImportPack"];
+            RestoreVanilla = (HudButton)view["RestoreVanilla"];
+            ThemeChoice.Change += ThemeChoice_Change;
+            ApplyTheme.MouseEvent += ApplyTheme_MouseEvent;
+            ImportPack.MouseEvent += ImportPack_MouseEvent;
+            RestoreVanilla.MouseEvent += RestoreVanilla_MouseEvent;
+            TryApplyCustomViewIcon();
+            RefreshInstalledPacks(PackManager.LoadLastSelectedInstallId());
+            if (nativeReady)
+                SetStatus(BuildReadyStatus());
+            else
+                UpdateStatusText();
+        }
 
-                Rectangle verified = DefaultView.Position;
-                viewSizeEnsured = verified.Width >= RequiredViewWidth &&
-                                  verified.Height >= RequiredViewHeight;
-            }
-            catch { }
+        private void DisposeView()
+        {
+            if (ThemeChoice != null) ThemeChoice.Change -= ThemeChoice_Change;
+            if (ApplyTheme != null) ApplyTheme.MouseEvent -= ApplyTheme_MouseEvent;
+            if (ImportPack != null) ImportPack.MouseEvent -= ImportPack_MouseEvent;
+            if (RestoreVanilla != null) RestoreVanilla.MouseEvent -= RestoreVanilla_MouseEvent;
+            if (view != null) view.Dispose();
+            view = null;
+            CurrentUiText = null;
+            StatusText = StatusTextLine2 = StatusTextLine3 = null;
+            ThemeChoice = null;
+            ApplyTheme = ImportPack = RestoreVanilla = null;
         }
 
         private void Core_RenderFrame(object sender, EventArgs e)
         {
-            // Decal can finish sizing a view after Startup. Keep this tiny
-            // fallback so the beta layout is guaranteed enough room without
-            // retaining the old developer polling loop.
-            if (!viewSizeEnsured)
-                EnsureViewSize();
+            if (view != null || viewFailed || DateTime.UtcNow < nextViewAttemptUtc)
+                return;
+            nextViewAttemptUtc = DateTime.UtcNow.AddSeconds(1);
+            try
+            {
+                // VVS may start after this plugin. Wait for it rather than falling
+                // back to a window hidden by Disable View Rendering.
+                if (!Service.Running)
+                    return;
+                CreateView();
+            }
+            catch (Exception ex)
+            {
+                viewFailed = true;
+                try { DisposeView(); } catch { }
+                try { Host.Actions.AddChatText("AC Customs: VVS window failed: " + ex.Message, 3); } catch { }
+            }
+        }
+
+        private void ApplyTheme_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
+                ApplyTheme_Click(sender, EventArgs.Empty);
+        }
+
+        private void ImportPack_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
+                ImportPack_Click(sender, EventArgs.Empty);
+        }
+
+        private void RestoreVanilla_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
+                RestoreVanilla_Click(sender, EventArgs.Empty);
         }
 
         private void RefreshInstalledPacks(string preferredInstallId)
@@ -215,7 +306,7 @@ namespace ACCustoms
             {
                 ThemeChoice.Clear();
                 foreach (InstalledPack pack in installedPacks)
-                    ThemeChoice.Add(pack.DisplayName, null);
+                    ThemeChoice.AddItem(pack.DisplayName, null);
 
                 int selectedIndex = -1;
                 if (!String.IsNullOrEmpty(preferredInstallId))
@@ -233,7 +324,8 @@ namespace ACCustoms
                 if (selectedIndex < 0 && installedPacks.Count > 0)
                     selectedIndex = 0;
 
-                ThemeChoice.Selected = selectedIndex;
+                if (selectedIndex >= 0)
+                    ThemeChoice.Current = selectedIndex;
             }
             finally
             {
@@ -249,7 +341,7 @@ namespace ACCustoms
             if (ThemeChoice == null)
                 return null;
 
-            int index = ThemeChoice.Selected;
+            int index = ThemeChoice.Current;
             return index >= 0 && index < installedPacks.Count
                 ? installedPacks[index]
                 : null;
@@ -257,20 +349,9 @@ namespace ACCustoms
 
         private void UpdateApplyButton()
         {
-            if (ApplyTheme == null)
-                return;
-
-            InstalledPack pack = GetSelectedPack();
-            if (pack == null)
-            {
-                ApplyTheme.Text = "Apply Theme";
-                return;
-            }
-
-            string name = pack.Name ?? "Theme";
-            if (name.Length > 24)
-                name = name.Substring(0, 21) + "...";
-            ApplyTheme.Text = "Apply " + name;
+            // The selector already displays the pack name. Keep the action label
+            // short so long pack names cannot clip the button caption.
+            if (ApplyTheme != null) ApplyTheme.Text = "Apply Theme";
         }
 
         private bool RestoreActiveThemeInternal(bool resetToEmptyDirectory)
@@ -293,8 +374,7 @@ namespace ACCustoms
             return true;
         }
 
-        [ControlEvent("ThemeChoice", "Change")]
-        private void ThemeChoice_Change(object sender, IndexChangeEventArgs e)
+        private void ThemeChoice_Change(object sender, EventArgs e)
         {
             try
             {
@@ -317,8 +397,7 @@ namespace ACCustoms
             }
         }
 
-        [ControlEvent("ImportPack", "Click")]
-        private void ImportPack_Click(object sender, ControlEventArgs e)
+        private void ImportPack_Click(object sender, EventArgs e)
         {
             try
             {
@@ -381,8 +460,7 @@ namespace ACCustoms
             }
         }
 
-        [ControlEvent("ApplyTheme", "Click")]
-        private void ApplyTheme_Click(object sender, ControlEventArgs e)
+        private void ApplyTheme_Click(object sender, EventArgs e)
         {
             try
             {
@@ -452,8 +530,7 @@ namespace ACCustoms
             }
         }
 
-        [ControlEvent("RestoreVanilla", "Click")]
-        private void RestoreVanilla_Click(object sender, ControlEventArgs e)
+        private void RestoreVanilla_Click(object sender, EventArgs e)
         {
             try
             {

@@ -15,6 +15,7 @@
       build_managed.cmd discovers the installed Decal directory and supplies it.
       There is deliberately no machine-specific fallback path here.
     -->
+    <VvsAssemblyPath Condition=" '$(VvsDir)' != '' ">$(VvsDir)\VirindiViewService.dll</VvsAssemblyPath>
     <DecalAdapterPath Condition=" '$(DecalDir)' != '' ">$(DecalDir)\Decal.Adapter.dll</DecalAdapterPath>
   </PropertyGroup>
 
@@ -46,6 +47,10 @@
     <Reference Include="System.Windows.Forms" />
 
     <!-- Decal supplies this assembly at runtime; do not copy/package our own copy. -->
+    <Reference Include="VirindiViewService">
+      <HintPath>$(VvsAssemblyPath)</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Decal.Adapter">
       <HintPath>$(DecalAdapterPath)</HintPath>
       <Private>False</Private>
@@ -72,6 +77,11 @@
     <Error
       Condition=" '$(DecalDir)' != '' and !Exists('$(DecalAdapterPath)') "
       Text="Decal.Adapter.dll was not found at '$(DecalAdapterPath)'. Install Decal 3.0 or run build_managed.cmd after correcting the Decal installation." />
+  </Target>
+
+  <Target Name="ValidateVvs" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition=" '$(VvsDir)' == '' or !Exists('$(VvsAssemblyPath)') "
+      Text="VirindiViewService.dll was not found. Install the Virindi Plugin Bundle and supply VvsDir, or use scripts/build_managed.cmd." />
   </Target>
 
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
