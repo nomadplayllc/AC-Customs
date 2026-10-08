@@ -250,6 +250,9 @@ static std::atomic<bool> g_ACCustomsApplyInProgress(false);
 static std::atomic<bool> g_DeveloperTestsEnabled(false);
 static void* g_CoreDrawHookTarget = nullptr;
 static std::atomic<bool> g_CoreDrawDisableScheduled(false);
+// A one-shot worker from the previous character session must never disable
+// the UI draw hook after LoginComplete has re-armed it for the new desktop.
+static std::atomic<std::uint32_t> g_CoreDrawDiscoveryGeneration(0);
 
 // Probe #92: every explicit theme selection advances a generation. Previously
 // known item caches are rebuilt in bulk during F8/F9, while never-before-seen
@@ -12180,12 +12183,21 @@ static bool __fastcall HookedCoreRenderSurfaceUpload(
     return g_OriginalRenderSurfaceUpload(thisPtr);
 }
 
-static DWORD WINAPI DisableCoreDrawHookWorker(LPVOID)
+static DWORD WINAPI DisableCoreDrawHookWorker(LPVOID context)
 {
     // Never rewrite the currently executing detour prologue from inside that
     // detour. Give the UI traversal time to return, then remove the one-shot
-    // discovery detour entirely.
+    // discovery detour entirely. A worker queued for an earlier login must
+    // not disable a newly re-armed draw hook.
+    const std::uint32_t generation = static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(context));
     Sleep(50);
+    std::lock_guard<std::mutex> lock(g_ACCustomsControlMutex);
+    if (generation != g_CoreDrawDiscoveryGeneration.load(std::memory_order_acquire) ||
+        g_Probe87CaptureArmed.load(std::memory_order_acquire) ||
+        g_ACCustomsSnapshotWriterRunning.load(std::memory_order_acquire))
+        return 0;
+
     if (g_CoreDrawHookTarget)
         MH_DisableHook(g_CoreDrawHookTarget);
     return 0;
@@ -12214,10 +12226,15 @@ static void __fastcall HookedCoreProbe87Draw(
             g_CoreDrawHookTarget &&
             !g_CoreDrawDisableScheduled.exchange(true, std::memory_order_acq_rel))
         {
+            const std::uintptr_t generation =
+                g_CoreDrawDiscoveryGeneration.load(std::memory_order_acquire);
             HANDLE worker = CreateThread(
-                nullptr, 0, DisableCoreDrawHookWorker, nullptr, 0, nullptr);
+                nullptr, 0, DisableCoreDrawHookWorker,
+                reinterpret_cast<void*>(generation), 0, nullptr);
             if (worker)
                 CloseHandle(worker);
+            else
+                g_CoreDrawDisableScheduled.store(false, std::memory_order_release);
         }
     }
 
@@ -14267,6 +14284,44 @@ extern "C" __declspec(dllexport) int __cdecl ACCustoms_Initialize()
     ACCustomsStartLiveMirrorBridge();
     WriteLog("ACCUSTOMS INITIALIZE result=READY activeTheme=VANILLA liveMirrorBridge=READY");
     return 1;
+}
+
+// A character relog rebuilds the AC desktop without restarting the process.
+// Refresh the UI-object addresses and temporarily re-enable the one-shot draw
+// discovery so Apply/Restore can invalidate the NEW session's backed UI roots.
+extern "C" __declspec(dllexport) int __cdecl ACCustoms_NotifyLoginComplete()
+{
+    if (!g_ACCustomsInitialized.load(std::memory_order_acquire))
+        return 0;
+
+    std::lock_guard<std::mutex> lock(g_ACCustomsControlMutex);
+
+    // Snapshot capture performs its own desktop-change rediscovery. Do not
+    // alter its hook lifetime while the snapshot writer owns that hook.
+    if (g_ACCustomsSnapshotWriterRunning.load(std::memory_order_acquire))
+        return 1;
+
+    if (!g_CoreDrawHookTarget)
+        return 0;
+
+    const std::uint32_t previousDesktop =
+        g_Probe87DesktopRoot.load(std::memory_order_acquire);
+    Probe87ResetUiSessionDiscovery(
+        "DECAL_LOGIN_COMPLETE", previousDesktop, 0);
+
+    // Invalidate the generation of any delayed disable worker from the
+    // previous UI session. A new worker will be queued after rediscovery.
+    g_CoreDrawDiscoveryGeneration.fetch_add(1, std::memory_order_acq_rel);
+    g_CoreDrawDisableScheduled.store(false, std::memory_order_release);
+
+    const MH_STATUS status = MH_EnableHook(g_CoreDrawHookTarget);
+    const bool enabled = status == MH_OK || status == MH_ERROR_ENABLED;
+    WriteLog(
+        std::string("ACCUSTOMS LOGIN_COMPLETE draw discovery=") +
+        (enabled ? "ARMED" : "FAILED") +
+        " oldDesktop=" + Hex32(previousDesktop) +
+        " hookStatus=" + std::to_string(static_cast<int>(status)));
+    return enabled ? 1 : 0;
 }
 
 extern "C" __declspec(dllexport) int __cdecl ACCustoms_ApplyTestReplacement()

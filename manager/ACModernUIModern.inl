@@ -4,9 +4,9 @@
 #include <dxgi.h>
 #include <dwmapi.h>
 
-#include "third_party/imgui/imgui.h"
-#include "third_party/imgui/backends/imgui_impl_win32.h"
-#include "third_party/imgui/backends/imgui_impl_dx11.h"
+#include "imgui.h"
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx11.h"
 
 // The Win32 backend intentionally leaves this declaration to the application.
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
@@ -52,6 +52,8 @@ static const ImVec4 MODERN_GREEN =
 
 static const ImVec4 MODERN_RED =
     ImVec4(0.95f, 0.32f, 0.34f, 1.00f);
+
+static ImFont* g_ModernBoldFont = nullptr;
 static ID3D11Texture2D*
     g_ModernLiveTexture = nullptr;
 
@@ -2502,6 +2504,32 @@ static void ModernLoadUiFont()
 
     if (!loaded)
         io.Fonts->AddFontDefault();
+
+    // Load a bold face for visible, actionable error messages. Use Windows
+    // font fallbacks to accommodate systems without Segoe UI Bold.
+    g_ModernBoldFont = nullptr;
+    if (length != 0 && length < _countof(windowsDirectory))
+    {
+        const wchar_t* boldNames[] =
+        {
+            L"segoeuib.ttf", L"arialbd.ttf", L"tahomabd.ttf"
+        };
+        for (const wchar_t* boldName : boldNames)
+        {
+            const std::wstring boldPathWide =
+                std::wstring(windowsDirectory) + L"\\Fonts\\" + boldName;
+            const DWORD attributes = GetFileAttributesW(boldPathWide.c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES ||
+                (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+                continue;
+
+            const std::string boldPath = FromWide(boldPathWide);
+            if (!boldPath.empty())
+                g_ModernBoldFont = io.Fonts->AddFontFromFileTTF(boldPath.c_str());
+            if (g_ModernBoldFont)
+                break;
+        }
+    }
 }
 
 
@@ -5758,13 +5786,19 @@ static void ModernRenderLiveUi()
 
     if (vanillaRequired)
     {
-        ImGui::TextColored(
-            MODERN_GOLD,
-            "Snapshot rejected - AC Customs is using a replacement theme.");
-
-        ImGui::TextDisabled(
-            "Switch AC Customs in-game to Vanilla, then click Take Snapshot. "
-            "The previous snapshot remains available.");
+        // Explicit recovery instruction: bold red and wrapped in the panel.
+        if (g_ModernBoldFont)
+            ImGui::PushFont(g_ModernBoldFont, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, MODERN_RED);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(
+            "Screen shot failed - Your AC UI needs to be in Default mode. "
+            "Open your AC Customs plugin and click the 'Restore Default' "
+            "button to take snapshots.");
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        if (g_ModernBoldFont)
+            ImGui::PopFont();
 
         ImGui::Spacing();
     }

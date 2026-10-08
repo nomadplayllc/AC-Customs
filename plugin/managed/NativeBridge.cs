@@ -39,6 +39,7 @@ namespace ACCustoms
         private static IntPtr module = IntPtr.Zero;
         private static NativeCall initialize;
         private static NativeCall applyTestReplacement;
+        private static NativeCall notifyLoginComplete;
         private static NativeCall restoreVanilla;
         private static NativeCall getActiveMode;
         private static NativeSetFlag setDeveloperTests;
@@ -78,6 +79,7 @@ namespace ACCustoms
 
             initialize = Resolve<NativeCall>("ACCustoms_Initialize");
             applyTestReplacement = Resolve<NativeCall>("ACCustoms_ApplyTestReplacement");
+            notifyLoginComplete = Resolve<NativeCall>("ACCustoms_NotifyLoginComplete");
             restoreVanilla = Resolve<NativeCall>("ACCustoms_RestoreVanilla");
             getActiveMode = Resolve<NativeCall>("ACCustoms_GetActiveMode");
             setDeveloperTests = Resolve<NativeSetFlag>("ACCustoms_SetDeveloperTests");
@@ -96,6 +98,15 @@ namespace ACCustoms
             {
                 EnsureLoaded();
                 return initialize() != 0;
+            }
+        }
+
+        public static bool NotifyLoginComplete()
+        {
+            lock (Sync)
+            {
+                EnsureLoaded();
+                return notifyLoginComplete() != 0;
             }
         }
 

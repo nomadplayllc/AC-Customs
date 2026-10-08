@@ -683,7 +683,7 @@ static bool LoadRememberedDatPath(
     std::string utf8(
         static_cast<std::size_t>(
             size.QuadPart),
-        '\\0');
+        '\0');
 
     const DWORD byteCount =
         static_cast<DWORD>(
@@ -708,9 +708,9 @@ static bool LoadRememberedDatPath(
     }
 
     while (!utf8.empty() &&
-           (utf8.back() == '\\r' ||
-            utf8.back() == '\\n' ||
-            utf8.back() == '\\0'))
+           (utf8.back() == '\r' ||
+            utf8.back() == '\n' ||
+            utf8.back() == '\0'))
     {
         utf8.pop_back();
     }
@@ -5436,12 +5436,6 @@ static bool RunConverter(
 
         return false;
     }
-
-    const std::wstring outputPath =
-        g_AppPaths.replacementDirectory +
-        L"\\" +
-        ToWide(texture.did) +
-        L".rgb";
 
     const DWORD attributes =
         GetFileAttributesW(

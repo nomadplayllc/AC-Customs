@@ -86,10 +86,19 @@ namespace ACCustoms
         {
             try
             {
+                // The same client process can create a new UI desktop after
+                // logout/login. Relearn its native UI roots before Apply/Restore.
+                if (nativeReady && !NativeBridge.NotifyLoginComplete())
+                    Host.Actions.AddChatText("AC Customs: failed to refresh UI discovery after login.", 3);
+
                 if (view == null)
                     Host.Actions.AddChatText("AC Customs: waiting for its VVS window. Ensure Virindi View Service is installed and enabled in Decal Services; restart AC after enabling it.", 3);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                try { Host.Actions.AddChatText("AC Customs: login UI refresh error: " + ex.Message, 3); }
+                catch { }
+            }
         }
 
         private void SetStatus(string text)
