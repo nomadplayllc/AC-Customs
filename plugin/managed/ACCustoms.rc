@@ -1,2 +1,32 @@
 #define IDI_ACCUSTOMS 101
 IDI_ACCUSTOMS ICON "ACCustoms.ico"
+
+// A custom Win32Resource replaces the C# compiler's generated version resource.
+// Keep these versions in sync with Properties/AssemblyInfo.cs.
+// Numeric constants avoid requiring Windows SDK headers in the resource search path.
+1 VERSIONINFO
+ FILEVERSION 1,3,0,0
+ PRODUCTVERSION 1,3,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x2L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "AC Customs\0"
+            VALUE "FileVersion", "1.3.0.0\0"
+            VALUE "InternalName", "ACCustoms\0"
+            VALUE "OriginalFilename", "ACCustoms.dll\0"
+            VALUE "ProductName", "AC Customs\0"
+            VALUE "ProductVersion", "1.3.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
