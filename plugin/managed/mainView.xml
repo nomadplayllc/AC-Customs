@@ -1,19 +1,30 @@
-<?xml version='1.0' encoding='utf-8'?>
-<view icon="8712" title="AC Customs" width="420" height="374">
+<?xml version="1.0" encoding="utf-8"?>
+<view icon="8712" title="AC Customs" width="430" height="326">
   <control progid="DecalControls.FixedLayout" clipped="">
-    <control progid="DecalControls.StaticText" name="CurrentUiText" left="10" top="10" width="400" height="26" fontface="Arial" fontsize="15" fontstyle="bold" justify="Center" text="Current UI: AC Default" />
-    <control progid="DecalControls.StaticText" name="ThemeLabel" left="10" top="46" width="400" height="18" fontface="Arial" fontsize="12" fontstyle="bold" text="INSTALLED UI PACKS" />
-    <control progid="DecalControls.Choice" name="ThemeChoice" left="10" top="66" width="400" height="24" />
-    <control progid="DecalControls.PushButton" name="ImportPack" left="10" top="98" width="160" height="28" fontface="Arial" fontsize="12" fontstyle="bold" text="Import UI Pack..." />
-    <control progid="DecalControls.PushButton" name="ApplyTheme" left="180" top="98" width="230" height="28" fontface="Arial" fontsize="12" fontstyle="bold" text="Apply Theme" />
-    <control progid="DecalControls.PushButton" name="RestoreVanilla" left="10" top="134" width="400" height="28" fontface="Arial" fontsize="12" fontstyle="bold" text="Restore Default" />
-    <control progid="DecalControls.StaticText" name="SafetyText" left="10" top="176" width="400" height="22" fontface="Arial" fontsize="12" justify="Center" text="AC starts with the default UI." />
-    <control progid="DecalControls.StaticText" name="RestartText" left="10" top="224" width="400" height="22" fontface="Arial" fontsize="12" justify="Center" text="If a custom UI causes problems," />
-    <control progid="DecalControls.StaticText" name="StatusLabel" left="10" top="280" width="400" height="18" fontface="Arial" fontsize="11" fontstyle="bold" text="STATUS" />
-    <control progid="DecalControls.StaticText" name="StatusText" left="10" top="302" width="400" height="22" fontface="Arial" fontsize="12" text="Starting..." />
-    <control progid="DecalControls.StaticText" name="SafetyTextDetail" left="10" top="198" width="400" height="22" fontface="Arial" fontsize="12" justify="Center" text="Select a pack, then click Apply Theme." />
-    <control progid="DecalControls.StaticText" name="RestartTextDetail" left="10" top="246" width="400" height="22" fontface="Arial" fontsize="12" justify="Center" text="close and restart AC." />
-    <control progid="DecalControls.StaticText" name="StatusTextLine2" left="10" top="324" width="400" height="22" fontface="Arial" fontsize="12" text="" />
-    <control progid="DecalControls.StaticText" name="StatusTextLine3" left="10" top="346" width="400" height="22" fontface="Arial" fontsize="12" text="" />
+    <!-- Default view: theme image only. Mapping configuration is deliberately
+         hidden behind the bottom-right Advanced toggle in PluginCore.cs.
+         It reuses the theme-file row instead of creating fragile VVS popups. -->
+    <control progid="DecalControls.StaticText" name="BrandTitle" left="17" top="10" width="396" height="26" fontface="Arial" fontsize="17" fontstyle="bold" text="AC CUSTOMS" />
+
+    <control progid="DecalControls.StaticText" name="TemplateLabel" left="18" top="51" width="76" height="20" fontface="Arial" fontsize="11" fontstyle="bold" text="THEME" />
+    <control progid="DecalControls.StaticText" name="TemplatePngText" left="94" top="51" width="184" height="20" fontface="Arial" fontsize="11" text="Choose theme..." />
+    <control progid="DecalControls.PushButton" name="BrowseTemplate" left="286" top="45" width="126" height="28" fontface="Arial" fontsize="11" fontstyle="bold" text="Browse" />
+
+    <control progid="DecalControls.StaticText" name="TemplateStatusIcon" left="20" top="97" width="35" height="25" fontface="Arial" fontsize="13" fontstyle="bold" text="o" />
+    <control progid="DecalControls.StaticText" name="TemplateStatusText" left="55" top="97" width="243" height="23" fontface="Arial" fontsize="12" fontstyle="bold" text="SELECT THEME" />
+    <control progid="DecalControls.PushButton" name="RefreshTemplate" left="302" top="92" width="110" height="28" fontface="Arial" fontsize="11" fontstyle="bold" text="Refresh" />
+
+    <control progid="DecalControls.PushButton" name="GenerateTemplate" left="18" top="137" width="242" height="39" fontface="Arial" fontsize="14" fontstyle="bold" text="GENERATE TEXTURES" />
+    <control progid="DecalControls.PushButton" name="ApplyGeneratedTemplate" left="267" top="137" width="145" height="39" fontface="Arial" fontsize="13" fontstyle="bold" text="APPLY UI" />
+    <control progid="DecalControls.PushButton" name="RestoreVanilla" left="18" top="188" width="394" height="29" fontface="Arial" fontsize="11" text="Restore Default UI" />
+
+    <control progid="DecalControls.StaticText" name="CurrentUiText" left="18" top="231" width="394" height="26" fontface="Arial" fontsize="13" fontstyle="bold" text="Current Theme: AC Default" />
+    <control progid="DecalControls.StaticText" name="StatusText" left="18" top="259" width="394" height="34" fontface="Arial" fontsize="13" fontstyle="bold" text="" />
+
+    <control progid="DecalControls.PushButton" name="AdvancedOptions" left="318" top="294" width="94" height="26" fontface="Arial" fontsize="10" text="Advanced" />
+
+    <!-- DEPRECATED: .acui selector/import controls no longer exposed.
+         The legacy pack-management implementation remains in PluginCore.cs
+         for backward compatibility and will be removed in a later release. -->
   </control>
 </view>

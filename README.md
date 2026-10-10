@@ -19,6 +19,8 @@ scripts/                 Reproducible Windows build scripts
 artifacts/               Generated build output (gitignored)
 ```
 
+Template Editor and editable ACUI pack-to-PNG export instructions: [Master Template Guide](docs/MASTER_TEMPLATE.md).
+
 ## What AC Customs does
 
 - Applies and restores UI texture replacement packs at runtime.

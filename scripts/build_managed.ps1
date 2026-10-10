@@ -90,6 +90,10 @@ try {
     Copy-Item -LiteralPath (Join-Path $managed 'bin\Release\ACCustoms.dll') -Destination $out -Force
     $pdb = Join-Path $managed 'bin\Release\ACCustoms.pdb'
     if (Test-Path -LiteralPath $pdb) { Copy-Item -LiteralPath $pdb -Destination $out -Force }
+    # The plugin project embeds Assets\template_mapping.json in ACCustoms.dll.
+    # No separate mapping file or original-master PNG is needed at runtime.
+    Write-Host 'Official texture mapping embedded in ACCustoms.dll.'
+
     Write-Host "Built $(Join-Path $out 'ACCustoms.dll')"
     exit 0
 } catch {

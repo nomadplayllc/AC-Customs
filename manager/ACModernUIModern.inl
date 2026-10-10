@@ -28,6 +28,7 @@ enum class ModernSection
     Encountered,
     LiveUi,
     Packs,
+    TemplateEditor,
     Info
 };
 
@@ -4541,6 +4542,13 @@ static void ModernRenderNavigation()
             ModernSection::Packs;
     }
 
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+    if (ModernNavButton(
+            "Template Editor",
+            g_ModernSection == ModernSection::TemplateEditor))
+        g_ModernSection = ModernSection::TemplateEditor;
+#endif
+
     // Keep Help/Info visually anchored at the bottom of the navigation
     // panel when there is room, without overlapping a long group list.
     const float infoButtonHeight = 40.0f;
@@ -5483,6 +5491,24 @@ static void ModernRenderInspector()
             g_MainWindow);
     }
 
+    ImGui::EndDisabled();
+
+    // File-based PNG export is useful for Photoshop versions that select
+    // the DIBV5 clipboard flavor and inadvertently flatten the alpha channel.
+    if (ImGui::Button(
+            "Save Original PNG...",
+            ImVec2(previewCardWidth, ModernButtonHeight(28.0f))))
+    {
+        SaveSelectedTextureAsPng(g_MainWindow, false);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!hasReplacement);
+    if (ImGui::Button(
+            "Save Replacement PNG...",
+            ImVec2(previewCardWidth, ModernButtonHeight(28.0f))))
+    {
+        SaveSelectedTextureAsPng(g_MainWindow, true);
+    }
     ImGui::EndDisabled();
 
     ImGui::Spacing();
@@ -7036,6 +7062,10 @@ static void ModernRenderPacks()
             "%s",
             g_ModernPackNotice.c_str());
     }
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+    TemplateImportDrawUi();
+#endif
+
 }
 
 
@@ -7790,6 +7820,9 @@ static void ModernRenderShell()
 {
     ModernHandleLiveSectionTransition();
     ModernPollGeneratedWork();
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+    TemplateImportWatchTick();
+#endif
 
     const ULONGLONG now =
         GetTickCount64();
@@ -7970,6 +8003,12 @@ static void ModernRenderShell()
                 ModernRenderPacks();
                 break;
 
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+            case ModernSection::TemplateEditor:
+                TemplateEditorDrawCanvas();
+                break;
+#endif
+
             case ModernSection::Info:
                 ModernRenderInfo();
                 break;
@@ -7989,7 +8028,12 @@ static void ModernRenderShell()
             0.0f),
         ImGuiChildFlags_Borders);
 
-    ModernRenderInspector();
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+    if (g_ModernSection == ModernSection::TemplateEditor)
+        TemplateEditorDrawInspector();
+    else
+#endif
+        ModernRenderInspector();
 
     ImGui::EndChild();
 
@@ -8278,9 +8322,18 @@ static void ModernRenderFrame()
         0);
 }
 
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+static void TemplateEditorReleaseAtlasResources();
+#endif
+
 static void ModernShutdown()
 {
     LiveMirrorFreeze();
+
+    // Release the atlas GPU texture/sampler before the D3D11 device.
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+    TemplateEditorReleaseAtlasResources();
+#endif
 
     ModernStopGeneratedWorker();
 

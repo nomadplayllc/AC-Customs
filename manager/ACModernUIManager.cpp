@@ -10,10 +10,14 @@
 #define UNICODE
 #define _UNICODE
 
+// Experimental branch only. Change to 0 before shipping a public build.
+#define AC_CUSTOMS_TEMPLATE_DEVTOOLS 1
+
 #include <Windows.h>
 #include <windowsx.h>
 #include <CommCtrl.h>
 #include <wincodec.h>
+#include <objidl.h>
 #include <CommDlg.h>
 
 #include <cstdint>
@@ -82,6 +86,10 @@ struct AppPaths
 };
 
 static AppPaths g_AppPaths;
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+// Declared early so DAT reloading can be blocked while the scan uses it.
+static std::atomic<bool> g_TemplateDevRunning{false};
+#endif
 
 static const int ID_REPLACE_PNG = 1001;
 static const int ID_COPY_DID = 1002;
@@ -1308,6 +1316,13 @@ static bool OpenAndScanDatPath(
     std::wstring& error)
 {
     error.clear();
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+    if (g_TemplateDevRunning.load())
+    {
+        error = L"Cannot reload client DAT during a developer template scan.";
+        return false;
+    }
+#endif
 
     CloseDatFile();
 
@@ -4964,288 +4979,327 @@ static void CopySelectedDidToClipboard(
 }
 
 
-static void CopySelectedTextureToClipboard(HWND owner)
+// Photoshop and other editors may interpret CF_DIBV5's alpha channel
+// differently. Publish a standard straight-alpha PNG in addition to DIBV5,
+// and offer a Save PNG action as a reliable file-based fallback.
+//
+// Input is the exact BGRA buffer used by Manager's texture preview; no
+// alpha premultiplication or background flattening is applied.
+static bool EncodeBgraAsPng(const std::vector<BYTE>& bgra,
+                            UINT width, UINT height,
+                            std::vector<BYTE>& png)
 {
-    if (g_SelectedRow < 0 ||
-        static_cast<std::size_t>(g_SelectedRow) >= g_Textures.size())
+    png.clear();
+    const std::uint64_t count =
+        static_cast<std::uint64_t>(width) * height * 4u;
+    if (g_WicFactory == nullptr || width == 0 || height == 0 ||
+        count == 0 || count > 0xFFFFFFFFull ||
+        bgra.size() != static_cast<std::size_t>(count))
+        return false;
+
+    // WIC PNG encoder's 32-bit RGBA path uses straight (unassociated) alpha.
+    // Converting channels rather than applying a color transform ensures
+    // transparent RGB bytes and soft edges survive exactly as authored.
+    std::vector<BYTE> rgba(bgra.size());
+    for (std::size_t i = 0; i < bgra.size(); i += 4u)
     {
-        return;
+        rgba[i]     = bgra[i + 2u];
+        rgba[i + 1u] = bgra[i + 1u];
+        rgba[i + 2u] = bgra[i];
+        rgba[i + 3u] = bgra[i + 3u];
     }
 
-    const TextureRecord& texture =
-        g_Textures[static_cast<std::size_t>(g_SelectedRow)];
+    IStream* stream = nullptr;
+    IWICBitmapEncoder* encoder = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    IPropertyBag2* properties = nullptr;
+    HRESULT hr = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+    if (SUCCEEDED(hr))
+        hr = g_WicFactory->CreateEncoder(
+            GUID_ContainerFormatPng, nullptr, &encoder);
+    if (SUCCEEDED(hr))
+        hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+    if (SUCCEEDED(hr))
+        hr = encoder->CreateNewFrame(&frame, &properties);
+    if (SUCCEEDED(hr)) hr = frame->Initialize(properties);
+    if (SUCCEEDED(hr)) hr = frame->SetSize(width, height);
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
+    if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&format);
+    // WIC may negotiate BGRA rather than RGBA. Both support straight alpha,
+    // but the channel order MUST match the negotiated encoder format.
+    const BYTE* encodePixels = rgba.data();
+    if (SUCCEEDED(hr) && IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA))
+        encodePixels = bgra.data();
+    else if (SUCCEEDED(hr) && !IsEqualGUID(format, GUID_WICPixelFormat32bppRGBA))
+        hr = E_FAIL;
+    if (SUCCEEDED(hr))
+        hr = frame->WritePixels(height, width * 4u,
+            static_cast<UINT>(rgba.size()), const_cast<BYTE*>(encodePixels));
+    if (SUCCEEDED(hr)) hr = frame->Commit();
+    if (SUCCEEDED(hr)) hr = encoder->Commit();
 
-    if (!IsPreviewable(texture))
+    if (SUCCEEDED(hr))
     {
-        SetWindowTextW(
-            g_InfoText,
-            L"Selected texture preview format is unsupported.");
-        return;
+        STATSTG stat = {};
+        HGLOBAL encoded = nullptr;
+        hr = stream->Stat(&stat, STATFLAG_NONAME);
+        if (SUCCEEDED(hr)) hr = GetHGlobalFromStream(stream, &encoded);
+        if (SUCCEEDED(hr) && encoded != nullptr && stat.cbSize.QuadPart > 0 &&
+            stat.cbSize.QuadPart <= static_cast<ULONGLONG>(GlobalSize(encoded)))
+        {
+            const void* bytes = GlobalLock(encoded);
+            if (bytes != nullptr)
+            {
+                const std::size_t size =
+                    static_cast<std::size_t>(stat.cbSize.QuadPart);
+                png.assign(static_cast<const BYTE*>(bytes),
+                    static_cast<const BYTE*>(bytes) + size);
+                GlobalUnlock(encoded);
+            }
+            else hr = E_FAIL;
+        }
+        else hr = E_FAIL;
     }
 
-    std::vector<unsigned char> bgra;
-    if (!LoadDatTexturePixels(texture, bgra))
-    {
-        SetWindowTextW(
-            g_InfoText,
-            L"Could not read the selected texture directly from the DAT.");
-        return;
-    }
+    if (properties) properties->Release();
+    if (frame) frame->Release();
+    if (encoder) encoder->Release();
+    if (stream) stream->Release();
+    if (FAILED(hr)) png.clear();
+    return SUCCEEDED(hr) && !png.empty();
+}
 
-    const UINT width = texture.width;
-    const UINT height = texture.height;
-    const UINT stride = width * 4u;
-    const SIZE_T pixelBytes =
-        static_cast<SIZE_T>(stride) *
-        static_cast<SIZE_T>(height);
-    const SIZE_T totalBytes =
-        sizeof(BITMAPV5HEADER) + pixelBytes;
-
-    if (bgra.size() != pixelBytes)
-        return;
-
-    HGLOBAL memory = GlobalAlloc(
-        GMEM_MOVEABLE | GMEM_ZEROINIT,
-        totalBytes);
-
-    if (memory == nullptr)
-        return;
-
-    BYTE* block =
-        static_cast<BYTE*>(GlobalLock(memory));
-
-    if (block == nullptr)
+// GMEM_MOVEABLE is mandatory for SetClipboardData. Ownership transfers only
+// when SetClipboardData succeeds, so callers must free any remaining handle.
+static HGLOBAL MakeClipboardBlock(const BYTE* bytes, std::size_t size)
+{
+    if (bytes == nullptr || size == 0) return nullptr;
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, size);
+    if (memory == nullptr) return nullptr;
+    void* output = GlobalLock(memory);
+    if (output == nullptr)
     {
         GlobalFree(memory);
-        return;
+        return nullptr;
     }
+    memcpy(output, bytes, size);
+    GlobalUnlock(memory);
+    return memory;
+}
 
+static bool CopyBgraToClipboard(HWND owner,
+                                const std::vector<BYTE>& bgra,
+                                UINT width, UINT height,
+                                const wchar_t* label)
+{
+    const std::uint64_t rawSize =
+        static_cast<std::uint64_t>(width) * height * 4u;
+    if (rawSize == 0 || rawSize > 0xFFFFFFFFull ||
+        bgra.size() != static_cast<std::size_t>(rawSize))
+        return false;
+
+    // DIBV5 remains available to applications that don't support PNG.
+    // The header describes top-down, non-premultiplied BGRA with true alpha.
+    const std::size_t dibSize = sizeof(BITMAPV5HEADER) + bgra.size();
+    std::vector<BYTE> dib(dibSize, 0u);
     BITMAPV5HEADER* header =
-        reinterpret_cast<BITMAPV5HEADER*>(block);
-
+        reinterpret_cast<BITMAPV5HEADER*>(dib.data());
     header->bV5Size = sizeof(BITMAPV5HEADER);
     header->bV5Width = static_cast<LONG>(width);
     header->bV5Height = -static_cast<LONG>(height);
     header->bV5Planes = 1;
     header->bV5BitCount = 32;
     header->bV5Compression = BI_BITFIELDS;
-    header->bV5SizeImage = static_cast<DWORD>(pixelBytes);
-    header->bV5RedMask   = 0x00FF0000;
-    header->bV5GreenMask = 0x0000FF00;
-    header->bV5BlueMask  = 0x000000FF;
-    header->bV5AlphaMask = 0xFF000000;
+    header->bV5SizeImage = static_cast<DWORD>(bgra.size());
+    header->bV5RedMask = 0x00FF0000u;
+    header->bV5GreenMask = 0x0000FF00u;
+    header->bV5BlueMask = 0x000000FFu;
+    header->bV5AlphaMask = 0xFF000000u;
     header->bV5CSType = LCS_sRGB;
+    memcpy(dib.data() + sizeof(BITMAPV5HEADER),
+        bgra.data(), bgra.size());
 
-    memcpy(
-        block + sizeof(BITMAPV5HEADER),
-        bgra.data(),
-        pixelBytes);
+    HGLOBAL dibMemory = MakeClipboardBlock(dib.data(), dib.size());
+    if (!dibMemory) return false;
 
-    GlobalUnlock(memory);
+    std::vector<BYTE> png;
+    const bool pngReady = EncodeBgraAsPng(bgra, width, height, png);
+    const UINT pngFormat = pngReady ? RegisterClipboardFormatW(L"PNG") : 0;
+    HGLOBAL pngMemory = pngFormat ? MakeClipboardBlock(png.data(), png.size()) : nullptr;
 
     if (!OpenClipboard(owner))
     {
-        GlobalFree(memory);
-        return;
+        GlobalFree(dibMemory);
+        if (pngMemory) GlobalFree(pngMemory);
+        return false;
     }
-
     EmptyClipboard();
-
-    if (SetClipboardData(CF_DIBV5, memory) != nullptr)
+    bool copiedPng = false;
+    bool copiedDib = false;
+    // Advertise PNG first; the receiving application selects which format it
+    // understands. PNG is lossless and keeps transparent pixels intact.
+    if (pngMemory != nullptr && SetClipboardData(pngFormat, pngMemory) != nullptr)
     {
-        memory = nullptr;
-        SetWindowTextW(
-            g_InfoText,
-            L"Original DAT texture copied to clipboard.");
+        pngMemory = nullptr;
+        copiedPng = true;
     }
-
+    if (SetClipboardData(CF_DIBV5, dibMemory) != nullptr)
+    {
+        dibMemory = nullptr;
+        copiedDib = true;
+    }
     CloseClipboard();
+    if (pngMemory) GlobalFree(pngMemory);
+    if (dibMemory) GlobalFree(dibMemory);
 
-    if (memory != nullptr)
-        GlobalFree(memory);
+    if (copiedPng || copiedDib)
+    {
+        SetWindowTextW(g_InfoText, copiedPng
+            ? label
+            : L"Copied DIBV5 only (PNG clipboard encoding unavailable).");
+        return true;
+    }
+    SetWindowTextW(g_InfoText, L"Could not write texture to clipboard.");
+    return false;
 }
 
+// Used by both Copy Replacement and Save Replacement PNG. 24-bit originals
+// are converted to fully opaque BGRA; 32-bit originals keep their alpha.
+static bool LoadReplacementPixelsBgra(const TextureRecord& texture,
+                                      std::vector<BYTE>& bgra)
+{
+    bgra.clear();
+    if (!IsPreviewable(texture) || !HasReplacement(texture) ||
+        texture.width == 0 || texture.height == 0)
+        return false;
+    const std::uint32_t bpp = texture.pixelFormat == 0x15u ? 4u : 3u;
+    const std::uint64_t count =
+        static_cast<std::uint64_t>(texture.width) * texture.height;
+    if (count * bpp != texture.imageSize || count > 0xFFFFFFFFull / 4u)
+        return false;
+    std::vector<BYTE> raw;
+    if (!ReadBinaryFile(ReplacementRawPath(texture), raw) ||
+        raw.size() != texture.imageSize)
+        return false;
+    bgra.resize(static_cast<std::size_t>(count) * 4u);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(count); ++i)
+    {
+        const BYTE* source = raw.data() + i * bpp;
+        BYTE* dest = bgra.data() + i * 4u;
+        dest[0] = source[0];
+        dest[1] = source[1];
+        dest[2] = source[2];
+        dest[3] = bpp == 4u ? source[3] : 255u;
+    }
+    return true;
+}
+
+static void CopySelectedTextureToClipboard(HWND owner)
+{
+    if (g_SelectedRow < 0 ||
+        static_cast<std::size_t>(g_SelectedRow) >= g_Textures.size())
+        return;
+    const TextureRecord& texture =
+        g_Textures[static_cast<std::size_t>(g_SelectedRow)];
+    std::vector<BYTE> bgra;
+    if (!IsPreviewable(texture) || !LoadDatTexturePixels(texture, bgra))
+    {
+        SetWindowTextW(g_InfoText,
+            L"Could not read original texture pixels from the DAT.");
+        return;
+    }
+    CopyBgraToClipboard(owner, bgra, texture.width, texture.height,
+        L"Original copied as PNG + DIBV5 (alpha preserved).");
+}
 
 static void CopySelectedReplacementTextureToClipboard(HWND owner)
 {
     if (g_SelectedRow < 0 ||
         static_cast<std::size_t>(g_SelectedRow) >= g_Textures.size())
+        return;
+    const TextureRecord& texture =
+        g_Textures[static_cast<std::size_t>(g_SelectedRow)];
+    std::vector<BYTE> bgra;
+    if (!LoadReplacementPixelsBgra(texture, bgra))
     {
+        SetWindowTextW(g_InfoText,
+            L"Could not read the replacement texture pixels.");
+        return;
+    }
+    CopyBgraToClipboard(owner, bgra, texture.width, texture.height,
+        L"Replacement copied as PNG + DIBV5 (alpha preserved).");
+}
+
+// Save a real transparent PNG when a target editor chooses an opaque clipboard
+// format. This also gives artists a repeatable test independent of clipboard.
+static void SaveSelectedTextureAsPng(HWND owner, bool replacement)
+{
+    if (g_SelectedRow < 0 ||
+        static_cast<std::size_t>(g_SelectedRow) >= g_Textures.size())
+    {
+        MessageBoxW(owner, L"Select a texture before exporting its PNG.",
+            L"AC Customs - Save Texture", MB_OK | MB_ICONWARNING);
         return;
     }
 
     const TextureRecord& texture =
         g_Textures[static_cast<std::size_t>(g_SelectedRow)];
+    std::wstring name(texture.did.begin(), texture.did.end());
+    name += replacement ? L"_replacement.png" : L"_original.png";
+    wchar_t filename[32768] = {};
+    wcscpy_s(filename, _countof(filename), name.c_str());
 
-    if (!IsPreviewable(texture) ||
-        texture.width == 0 ||
-        texture.height == 0)
+    // Show Save As BEFORE decoding and encoding. Previously, an encoding
+    // failure returned silently without ever displaying the dialog.
+    OPENFILENAMEW dialog = {};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = L"PNG Images (*.png)\0*.png\0\0";
+    dialog.lpstrFile = filename;
+    dialog.nMaxFile = static_cast<DWORD>(_countof(filename));
+    dialog.lpstrTitle = L"Save AC Customs Texture as Transparent PNG";
+    dialog.lpstrDefExt = L"png";
+    dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&dialog))
     {
-        SetWindowTextW(
-            g_InfoText,
-            L"Selected texture preview format is unsupported.");
+        const DWORD dialogError = CommDlgExtendedError();
+        if (dialogError != 0)
+        {
+            const std::wstring message = L"Could not open Save As dialog (error " +
+                std::to_wstring(dialogError) + L").";
+            MessageBoxW(owner, message.c_str(), L"AC Customs - Save Texture",
+                MB_OK | MB_ICONERROR);
+        }
+        return; // User canceled if dialogError == 0.
+    }
+
+    std::vector<BYTE> bgra;
+    const bool loaded = replacement
+        ? LoadReplacementPixelsBgra(texture, bgra)
+        : (IsPreviewable(texture) && LoadDatTexturePixels(texture, bgra));
+    if (!loaded)
+    {
+        MessageBoxW(owner, L"Could not read the selected texture pixels.",
+            L"AC Customs - Save Texture", MB_OK | MB_ICONERROR);
         return;
     }
-
-    if (!HasReplacement(texture))
+    std::vector<BYTE> png;
+    if (!EncodeBgraAsPng(bgra, texture.width, texture.height, png))
     {
-        SetWindowTextW(
-            g_InfoText,
-            L"No replacement texture exists for this DID.");
+        MessageBoxW(owner,
+            L"Could not encode this texture as a PNG with alpha.\n"
+            L"No file was written. Please report the texture DID.",
+            L"AC Customs - Save Texture", MB_OK | MB_ICONERROR);
         return;
     }
-
-    const std::uint32_t bytesPerPixel =
-        texture.pixelFormat == 0x15 ? 4u : 3u;
-
-    const unsigned long long expectedSize =
-        static_cast<unsigned long long>(texture.width) *
-        static_cast<unsigned long long>(texture.height) *
-        bytesPerPixel;
-
-    if (expectedSize != texture.imageSize)
+    if (!WriteBinaryFile(filename, png))
     {
-        SetWindowTextW(
-            g_InfoText,
-            L"Replacement texture size does not match its catalog metadata.");
+        MessageBoxW(owner, L"Could not write the PNG to the selected path.",
+            L"AC Customs - Save Texture", MB_OK | MB_ICONERROR);
         return;
     }
-
-    std::ifstream input(
-        ReplacementRawPath(texture),
-        std::ios::binary);
-
-    if (!input.is_open())
-    {
-        SetWindowTextW(
-            g_InfoText,
-            L"Could not open the replacement texture.");
-        return;
-    }
-
-    std::vector<BYTE> raw(texture.imageSize);
-    input.read(
-        reinterpret_cast<char*>(raw.data()),
-        static_cast<std::streamsize>(raw.size()));
-
-    if (input.gcount() != static_cast<std::streamsize>(raw.size()))
-    {
-        SetWindowTextW(
-            g_InfoText,
-            L"Could not read the complete replacement texture.");
-        return;
-    }
-
-    input.peek();
-    if (!input.eof())
-    {
-        SetWindowTextW(
-            g_InfoText,
-            L"Replacement texture contains unexpected extra data.");
-        return;
-    }
-
-    const UINT width = texture.width;
-    const UINT height = texture.height;
-    const UINT stride = width * 4u;
-    const SIZE_T pixelBytes =
-        static_cast<SIZE_T>(stride) *
-        static_cast<SIZE_T>(height);
-    const SIZE_T totalBytes =
-        sizeof(BITMAPV5HEADER) + pixelBytes;
-
-    HGLOBAL memory =
-        GlobalAlloc(
-            GMEM_MOVEABLE | GMEM_ZEROINIT,
-            totalBytes);
-
-    if (memory == nullptr)
-    {
-        SetWindowTextW(
-            g_InfoText,
-            L"Could not allocate clipboard image data.");
-        return;
-    }
-
-    BYTE* block =
-        static_cast<BYTE*>(
-            GlobalLock(memory));
-
-    if (block == nullptr)
-    {
-        GlobalFree(memory);
-        SetWindowTextW(
-            g_InfoText,
-            L"Could not prepare replacement texture for the clipboard.");
-        return;
-    }
-
-    BITMAPV5HEADER* header =
-        reinterpret_cast<BITMAPV5HEADER*>(block);
-
-    header->bV5Size = sizeof(BITMAPV5HEADER);
-    header->bV5Width = static_cast<LONG>(width);
-    header->bV5Height = -static_cast<LONG>(height);
-    header->bV5Planes = 1;
-    header->bV5BitCount = 32;
-    header->bV5Compression = BI_BITFIELDS;
-    header->bV5SizeImage = static_cast<DWORD>(pixelBytes);
-    header->bV5RedMask = 0x00FF0000;
-    header->bV5GreenMask = 0x0000FF00;
-    header->bV5BlueMask = 0x000000FF;
-    header->bV5AlphaMask = 0xFF000000;
-    header->bV5CSType = LCS_sRGB;
-
-    BYTE* pixels =
-        block + sizeof(BITMAPV5HEADER);
-
-    const std::size_t pixelCount =
-        static_cast<std::size_t>(width) *
-        static_cast<std::size_t>(height);
-
-    for (std::size_t i = 0; i < pixelCount; ++i)
-    {
-        const BYTE* source =
-            raw.data() + i * bytesPerPixel;
-        BYTE* destination =
-            pixels + i * 4u;
-
-        destination[0] = source[0];
-        destination[1] = source[1];
-        destination[2] = source[2];
-        destination[3] =
-            bytesPerPixel == 4u
-                ? source[3]
-                : 255u;
-    }
-
-    GlobalUnlock(memory);
-
-    if (!OpenClipboard(owner))
-    {
-        GlobalFree(memory);
-        return;
-    }
-
-    EmptyClipboard();
-
-    if (SetClipboardData(CF_DIBV5, memory) != nullptr)
-    {
-        memory = nullptr;
-        SetWindowTextW(
-            g_InfoText,
-            L"Replacement texture copied to clipboard.");
-    }
-
-    CloseClipboard();
-
-    if (memory != nullptr)
-    {
-        GlobalFree(memory);
-        SetWindowTextW(
-            g_InfoText,
-            L"Could not copy replacement texture to clipboard.");
-    }
+    SetWindowTextW(g_InfoText,
+        L"Saved transparent PNG with original alpha channel.");
 }
 
 
@@ -11308,7 +11362,21 @@ static void ShowLiveUiEditor(HWND owner)
 }
 
 
+#include "ACModernUITemplateMapperDev.inl"
+#include "ACModernUITemplateImporterDev.inl"
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+static void TemplateImportDrawUi();
+#endif
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+static void TemplateImportWatchTick();
+#endif
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+static void TemplateEditorDrawCanvas();
+static void TemplateEditorDrawInspector();
+#endif
 #include "ACModernUIModern.inl"
+#include "ACModernUITemplateImportUI.inl"
+#include "ACModernUITemplateEditorUI.inl"
 
 static void ResizeControls(
     HWND window)
@@ -11946,6 +12014,10 @@ static LRESULT CALLBACK WindowProc(
             QueueSmallPreviewsForActiveTab();
             QueueVisiblePreviews();
             SetTimer(window, PREVIEW_TIMER_ID, 150, nullptr);
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+            RegisterHotKey(window, TEMPLATE_DEV_HOTKEY_ID,
+                           MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'M');
+#endif
 
             ResizeControls(window);
             return 0;
@@ -12080,10 +12152,23 @@ static LRESULT CALLBACK WindowProc(
             // The ImGui header reads the atomic status directly.
             return 0;
 
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+        case WM_HOTKEY:
+            if (wParam == TEMPLATE_DEV_HOTKEY_ID)
+            {
+                TemplateDevStart(window);
+                return 0;
+            }
+            break;
+#endif
+
         case WM_TIMER:
             if (wParam == PREVIEW_TIMER_ID)
             {
                 QueueVisiblePreviews();
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+                TemplateDevTick(window);
+#endif
                 return 0;
             }
             break;
@@ -12388,6 +12473,9 @@ static LRESULT CALLBACK WindowProc(
 
         case WM_DESTROY:
             KillTimer(window, PREVIEW_TIMER_ID);
+#if AC_CUSTOMS_TEMPLATE_DEVTOOLS
+            TemplateDevShutdown(window);
+#endif
             {
                 std::lock_guard<std::mutex> lock(g_PreviewMutex);
                 g_StopPreviewWorker = true;
