@@ -63,6 +63,7 @@
     <Compile Include="PackManager.cs" />
     <Compile Include="TemplateTextureCompiler.cs" />
     <Compile Include="MappingUpdateService.cs" />
+    <Compile Include="ThemeLibraryService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
 

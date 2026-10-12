@@ -18,6 +18,31 @@
           <control progid="DecalControls.StaticText" name="StatusText" left="18" top="245" width="394" height="29" fontface="Arial" fontsize="11" text="" />
         </control>
       </page>
+      <page label="Themes">
+        <control progid="DecalControls.FixedLayout" name="ThemesPageLayout" clipped="">
+          <control progid="DecalControls.StaticText" name="ThemesHeader" left="18" top="12" width="394" height="25" fontface="Arial" fontsize="16" fontstyle="bold" text="THEME LIBRARY" />
+          <control progid="DecalControls.StaticText" name="ThemesIntro" left="18" top="40" width="394" height="20" fontface="Arial" fontsize="10" text="Official themes from the AC Customs GitHub folder." />
+          <control progid="DecalControls.List" name="ThemesList" left="18" top="66" width="394" height="145">
+            <column progid="DecalControls.TextColumn" name="ThemeListName" fixedwidth="207" />
+            <column progid="DecalControls.TextColumn" name="ThemeListState" fixedwidth="162" />
+          </control>
+          <control progid="DecalControls.StaticText" name="ThemesStatus" left="18" top="215" width="394" height="24" fontface="Arial" fontsize="11" text="Checking GitHub themes..." />
+          <control progid="DecalControls.PushButton" name="ThemesRefresh" left="18" top="248" width="114" height="31" fontface="Arial" fontsize="11" text="Refresh" />
+          <control progid="DecalControls.PushButton" name="ThemesInstall" left="141" top="248" width="132" height="31" fontface="Arial" fontsize="11" text="Install/Update" />
+          <control progid="DecalControls.PushButton" name="ThemesUse" left="282" top="248" width="130" height="31" fontface="Arial" fontsize="11" text="Use Theme" />
+        </control>
+      </page>
+      <page label="Upload">
+        <control progid="DecalControls.FixedLayout" name="UploadPageLayout" clipped="">
+          <control progid="DecalControls.StaticText" name="UploadHeader" left="18" top="13" width="394" height="26" fontface="Arial" fontsize="16" fontstyle="bold" text="SHARE YOUR THEME" />
+          <control progid="DecalControls.StaticText" name="UploadIntro" left="18" top="44" width="394" height="39" fontface="Arial" fontsize="11" text="Submit a 2000 x 2000 PNG for community review." />
+          <control progid="DecalControls.StaticText" name="UploadFilename" left="18" top="97" width="257" height="23" fontface="Arial" fontsize="11" text="No PNG selected" />
+          <control progid="DecalControls.PushButton" name="UploadBrowse" left="282" top="90" width="130" height="31" fontface="Arial" fontsize="11" text="Select PNG" />
+          <control progid="DecalControls.StaticText" name="UploadGuidelines" left="18" top="137" width="394" height="42" fontface="Arial" fontsize="11" text="Share only artwork you have permission to publish. All submissions are reviewed before appearing in Themes." />
+          <control progid="DecalControls.StaticText" name="UploadStatus" left="18" top="202" width="394" height="39" fontface="Arial" fontsize="11" text="Choose a PNG to prepare your submission." />
+          <control progid="DecalControls.PushButton" name="UploadSubmit" left="18" top="249" width="394" height="32" fontface="Arial" fontsize="11" fontstyle="bold" text="Submit for Review" />
+        </control>
+      </page>
       <page label="Advanced">
         <control progid="DecalControls.FixedLayout" name="AdvancedPageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="AdvancedHeader" left="18" top="20" width="394" height="24" fontface="Arial" fontsize="16" fontstyle="bold" text="MAPPING SETTINGS" />

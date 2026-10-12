@@ -62,6 +62,29 @@ namespace ACCustoms
         private readonly Dictionary<string, ButtonArtwork> buttonArtwork =
             new Dictionary<string, ButtonArtwork>();
         private readonly List<Bitmap> ownedButtonBitmaps = new List<Bitmap>();
+        // Official themes are independent of mapping versions. The GitHub
+        // contents API supplies file SHA identifiers; there is no theme catalog.
+        private readonly object themeWorkerLock = new object();
+        private readonly List<GithubThemeItem> availableThemes = new List<GithubThemeItem>();
+        private int selectedOfficialTheme = -1;
+        private bool themeCatalogRunning, themeCatalogReady, themeCatalogPending;
+        private List<GithubThemeItem> themeCatalogResult;
+        private string themeCatalogError;
+        private DateTime lastThemeCheckUtc = DateTime.MinValue;
+        private DateTime nextThemeRetryUtc = DateTime.MaxValue;
+        private bool themeInstallRunning, themeInstallPending;
+        private string themeInstallPath, themeInstallError;
+        private GithubThemeItem installingTheme;
+        private bool uploadRunning, uploadPending;
+        private string uploadResultId, uploadResultError, selectedUploadPng = String.Empty;
+        private string themesFeedback = "Checking GitHub themes...";
+        private string uploadFeedback = "Select a PNG to prepare a submission.";
+        private HudList themesList;
+        private HudStaticText themesHeader, themesIntro, themesStatus;
+        private HudButton themesRefresh, themesInstall, themesUse;
+        private HudStaticText uploadHeader, uploadIntro, uploadFilename, uploadGuidelines, uploadStatus;
+        private HudButton uploadBrowse, uploadSubmit;
+
         private HudButton AdvancedUseDefault;
         private HudStaticText AdvancedMappingLabel;
         private HudStaticText AdvancedMappingFile;
@@ -227,6 +250,7 @@ namespace ACCustoms
                 // LoginComplete triggers another check after character login.
                 // Also check once at startup if the plugin loads into an active session.
                 BeginMappingUpdateCheck();
+                BeginThemeCatalogCheck();
             }
             catch (Exception ex)
             {
@@ -311,6 +335,7 @@ namespace ACCustoms
                 if (view == null)
                     Host.Actions.AddChatText("AC Customs: waiting for its VVS window. Ensure Virindi View Service is installed and enabled in Decal Services; restart AC after enabling it.", 3);
                 BeginMappingUpdateCheck();
+                BeginThemeCatalogCheck();
             }
             catch (Exception ex)
             {
@@ -487,6 +512,20 @@ namespace ACCustoms
             GenerateTemplate = (HudButton)view["GenerateTemplate"];
             ApplyGeneratedTemplate = (HudButton)view["ApplyGeneratedTemplate"];
             RestoreVanilla = (HudButton)view["RestoreVanilla"];
+            themesHeader = (HudStaticText)view["ThemesHeader"];
+            themesIntro = (HudStaticText)view["ThemesIntro"];
+            themesStatus = (HudStaticText)view["ThemesStatus"];
+            themesList = (HudList)view["ThemesList"];
+            themesRefresh = (HudButton)view["ThemesRefresh"];
+            themesInstall = (HudButton)view["ThemesInstall"];
+            themesUse = (HudButton)view["ThemesUse"];
+            uploadHeader = (HudStaticText)view["UploadHeader"];
+            uploadIntro = (HudStaticText)view["UploadIntro"];
+            uploadFilename = (HudStaticText)view["UploadFilename"];
+            uploadGuidelines = (HudStaticText)view["UploadGuidelines"];
+            uploadStatus = (HudStaticText)view["UploadStatus"];
+            uploadBrowse = (HudButton)view["UploadBrowse"];
+            uploadSubmit = (HudButton)view["UploadSubmit"];
             AdvancedCheckUpdates = (HudButton)view["AdvancedCheckUpdates"];
             AdvancedHeader = (HudStaticText)view["AdvancedHeader"];
             AdvancedInfo = (HudStaticText)view["AdvancedInfo"];
@@ -520,6 +559,12 @@ namespace ACCustoms
             ApplyGeneratedTemplate.MouseEvent += ApplyGeneratedTemplate_MouseEvent;
             RestoreVanilla.MouseEvent += RestoreVanilla_MouseEvent;
             AdvancedCheckUpdates.MouseEvent += AdvancedCheckUpdates_MouseEvent;
+            themesList.Click += ThemesList_Click;
+            themesRefresh.MouseEvent += ThemesRefresh_MouseEvent;
+            themesInstall.MouseEvent += ThemesInstall_MouseEvent;
+            themesUse.MouseEvent += ThemesUse_MouseEvent;
+            uploadBrowse.MouseEvent += UploadBrowse_MouseEvent;
+            uploadSubmit.MouseEvent += UploadSubmit_MouseEvent;
             if (viewHasUpdateTab)
             {
                 updateOpenFolderButton.MouseEvent += UpdateOpenFolder_MouseEvent;
@@ -532,6 +577,8 @@ namespace ACCustoms
             TryApplyCustomViewIcon();
             RefreshInstalledPacks(null);
             RefreshTemplateStatus();
+            RefreshThemesTab();
+            RefreshUploadTab();
             UpdateCurrentUiText();
             SetStatus(nativeReady ? BuildReadyStatus() : "Native engine failed to initialize");
         }
@@ -571,6 +618,12 @@ namespace ACCustoms
                 AdvancedFooter, AdvancedMappingFile, AdvancedMappingHint,
                 UpdateInstructions, updateInstalledText })
                 TrySetColor(info, UiMuted);
+            foreach (object heading in new object[] { themesHeader, uploadHeader })
+                TrySetColor(heading, UiGold);
+            foreach (object info in new object[] { themesIntro, uploadIntro, uploadGuidelines,
+                uploadFilename }) TrySetColor(info, UiMuted);
+            TrySetColor(themesStatus, UiBodyText);
+            TrySetColor(uploadStatus, UiBodyText);
             TrySetColor(updateAvailableText, UiBlue);
             TrySetColor(updateStatusText, UiMuted);
 
@@ -587,6 +640,16 @@ namespace ACCustoms
                 UiPrimaryButton, 144, 37, 16, true);
             RegisterButtonArtwork("RestoreVanilla", RestoreVanilla, "Restore Default UI",
                 UiSecondaryButton, 394, 29, 14, false);
+            RegisterButtonArtwork("ThemesRefresh", themesRefresh, "Refresh",
+                UiSecondaryButton, 114, 31, 14, false);
+            RegisterButtonArtwork("ThemesInstall", themesInstall, "Install/Update",
+                UiPrimaryButton, 132, 31, 14, true);
+            RegisterButtonArtwork("ThemesUse", themesUse, "Use Theme",
+                UiAdvancedButton, 130, 31, 14, true);
+            RegisterButtonArtwork("UploadBrowse", uploadBrowse, "Select PNG",
+                UiAdvancedButton, 130, 31, 14, false);
+            RegisterButtonArtwork("UploadSubmit", uploadSubmit, "Submit for Review",
+                UiPrimaryButton, 394, 32, 14, true);
             RegisterButtonArtwork("AdvancedOptions", AdvancedOptions, "Change Mapping",
                 UiAdvancedButton, 138, 28, 14, false);
             RegisterButtonArtwork("AdvancedUseDefault", AdvancedUseDefault, "Use Default",
@@ -621,8 +684,8 @@ namespace ACCustoms
             if (!skinnedPageLayouts.Contains("__root") &&
                 ApplyLayoutBackground(view.Controls.HeadControl))
                 skinnedPageLayouts.Add("__root");
-            foreach (string name in new[] { "ThemePageLayout", "AdvancedPageLayout",
-                "UpdatePageLayout" })
+            foreach (string name in new[] { "ThemePageLayout", "ThemesPageLayout",
+                "UploadPageLayout", "AdvancedPageLayout", "UpdatePageLayout" })
             {
                 if (skinnedPageLayouts.Contains(name)) continue;
                 try
@@ -754,6 +817,12 @@ namespace ACCustoms
             if (ImportPack != null) ImportPack.MouseEvent -= ImportPack_MouseEvent;
             if (RestoreVanilla != null) RestoreVanilla.MouseEvent -= RestoreVanilla_MouseEvent;
             if (AdvancedCheckUpdates != null) AdvancedCheckUpdates.MouseEvent -= AdvancedCheckUpdates_MouseEvent;
+            if (themesList != null) themesList.Click -= ThemesList_Click;
+            if (themesRefresh != null) themesRefresh.MouseEvent -= ThemesRefresh_MouseEvent;
+            if (themesInstall != null) themesInstall.MouseEvent -= ThemesInstall_MouseEvent;
+            if (themesUse != null) themesUse.MouseEvent -= ThemesUse_MouseEvent;
+            if (uploadBrowse != null) uploadBrowse.MouseEvent -= UploadBrowse_MouseEvent;
+            if (uploadSubmit != null) uploadSubmit.MouseEvent -= UploadSubmit_MouseEvent;
             if (updateOpenFolderButton != null) updateOpenFolderButton.MouseEvent -= UpdateOpenFolder_MouseEvent;
             if (updateDownloadButton != null) updateDownloadButton.MouseEvent -= UpdateDownload_MouseEvent;
             if (BrowseTemplate != null) BrowseTemplate.MouseEvent -= BrowseTemplate_MouseEvent;
@@ -780,6 +849,11 @@ namespace ACCustoms
             AdvancedCheckUpdates = AdvancedUseDefault = null;
             AdvancedMappingLabel = AdvancedMappingFile = AdvancedMappingHint = null;
             AdvancedHeader = AdvancedInfo = AdvancedMappingVersion = AdvancedFooter = null;
+            themesHeader = themesIntro = themesStatus = null;
+            themesList = null;
+            themesRefresh = themesInstall = themesUse = null;
+            uploadHeader = uploadIntro = uploadFilename = uploadGuidelines = uploadStatus = null;
+            uploadBrowse = uploadSubmit = null;
             UpdateHeader = UpdateNotesHeader = UpdateInstructions = null;
             updateInstalledText = updateAvailableText = updateStatusText = null;
             updateNotesList = null;
@@ -792,6 +866,12 @@ namespace ACCustoms
             // completion exactly once here, on the normal Decal render thread.
             FinishTemplateBuildIfReady();
             FinishMappingUpdateWorkers();
+            FinishThemeWorkers();
+            if (DateTime.UtcNow >= nextThemeRetryUtc && !updateShuttingDown)
+            {
+                nextThemeRetryUtc = DateTime.MaxValue;
+                BeginThemeCatalogCheck();
+            }
             if (notebookRebuildRequested && view != null)
                 RebuildMainNotebook();
             ApplyNotebookResize();
@@ -1158,6 +1238,40 @@ namespace ACCustoms
             TryNotebookControlRect("CurrentUiText", 18, 220 + dy, 394 + dx, 21);
             TryNotebookControlRect("StatusText", 18, 245 + dy, 394 + dx, 29);
 
+            // Themes: only the scrollable list expands; bottom actions stay visible.
+            TryNotebookControlRect("ThemesHeader", 18, 12, 394 + dx, 25);
+            TryNotebookControlRect("ThemesIntro", 18, 40, 394 + dx, 20);
+            int themesW = 394 + dx;
+            if (TryNotebookControlRect("ThemesList", 18, 66, themesW, 145 + dy))
+            {
+                try
+                {
+                    var set = themesList.GetType().GetMethod("SetColumnWidth",
+                        new[] { typeof(int), typeof(int) });
+                    if (set != null)
+                    {
+                        set.Invoke(themesList, new object[] { 0, Math.Max(100, themesW - 187) });
+                        set.Invoke(themesList, new object[] { 1, 162 });
+                    }
+                }
+                catch { }
+            }
+            TryNotebookControlRect("ThemesStatus", 18, 215 + dy, 394 + dx, 24);
+            TryNotebookControlRect("ThemesRefresh", 18, 248 + dy, 114, 31);
+            TryNotebookControlRect("ThemesInstall", 141 + dx / 2, 248 + dy, 132, 31);
+            TryNotebookControlRect("ThemesUse", 282 + dx, 248 + dy, 130, 31);
+
+            // Upload page: filename and footer grow with the window.
+            TryNotebookControlRect("UploadHeader", 18, 13, 394 + dx, 26);
+            TryNotebookControlRect("UploadIntro", 18, 44, 394 + dx, 39);
+            TryNotebookControlRect("UploadFilename", 18, 97, 257 + dx, 23);
+            TryNotebookControlRect("UploadBrowse", 282 + dx, 90, 130, 31);
+            TryNotebookControlRect("UploadGuidelines", 18, 137, 394 + dx, 42);
+            TryNotebookControlRect("UploadStatus", 18, 202 + dy, 394 + dx, 39);
+            TryNotebookControlRect("UploadSubmit", 18, 249 + dy, 394 + dx, 32);
+            ResizeButtonArtwork("UploadSubmit", 394 + dx, 32);
+
+
             // Advanced: mapping actions stay aligned with the right margin.
             TryNotebookControlRect("AdvancedHeader", 18, 20, 394 + dx, 24);
             TryNotebookControlRect("AdvancedInfo", 18, 46, 394 + dx, 24);
@@ -1205,7 +1319,10 @@ namespace ACCustoms
             // A notebook page itself can't be hidden like a PushButton.
             // Reparse only when the update state changes, reusing the SAME
             // HudView identifier so VVS never gets a second bar icon.
-            if (view != null && viewHasUpdateTab != mappingUpdateVisible && !rebuildingNotebook)
+            // Do NOT destroy the visible VVS view when an update is installed.
+            // Keep the Update page with its success message until next login.
+            // A new update can still add the page when it was previously absent.
+            if (view != null && mappingUpdateVisible && !viewHasUpdateTab && !rebuildingNotebook)
                 notebookRebuildRequested = true;
         }
 
@@ -1228,6 +1345,19 @@ namespace ACCustoms
             Size oldClientArea = Size.Empty;
             bool hasLocation = false;
             bool hasSize = false;
+            bool wasVisible = false;
+            bool visibilityKnown = false;
+            try
+            {
+                var visibility = view.GetType().GetProperty("Visible");
+                if (visibility != null && visibility.CanRead &&
+                    visibility.PropertyType == typeof(bool))
+                {
+                    wasVisible = (bool)visibility.GetValue(view, null);
+                    visibilityKnown = true;
+                }
+            }
+            catch { }
             try
             {
                 oldLocation = view.Location;
@@ -1244,6 +1374,13 @@ namespace ACCustoms
                 {
                     if (hasLocation) view.Location = oldLocation;
                     if (hasSize) view.ClientArea = oldClientArea;
+                    try
+                    {
+                        var visibility = view.GetType().GetProperty("Visible");
+                        if (visibilityKnown && visibility != null && visibility.CanWrite)
+                            visibility.SetValue(view, wasVisible, null);
+                    }
+                    catch { }
                 }
                 SetStatus(previousStatus);
             }
@@ -1256,6 +1393,360 @@ namespace ACCustoms
                 nextViewAttemptUtc = DateTime.UtcNow.AddSeconds(2);
             }
             finally { rebuildingNotebook = false; }
+        }
+
+        // ------------------------------------ Official Theme Library / Upload
+        // The GitHub Contents API lists theme PNG files and their git blob SHA.
+        // No theme manifest or version numbers are required.
+        private void BeginThemeCatalogCheck(bool manual = false)
+        {
+            lock (themeWorkerLock)
+            {
+                if (themeCatalogRunning)
+                {
+                    if (manual) themesFeedback = "Already checking GitHub...";
+                    return;
+                }
+                if (!manual && DateTime.UtcNow - lastThemeCheckUtc < TimeSpan.FromMinutes(2))
+                    return;
+                themeCatalogRunning = true;
+                lastThemeCheckUtc = DateTime.UtcNow;
+            }
+            if (manual)
+            {
+                themesFeedback = "Checking GitHub for themes...";
+                RefreshThemesTab();
+            }
+            ThreadPool.QueueUserWorkItem(delegate(object unused)
+            {
+                List<GithubThemeItem> list = null;
+                string error = null;
+                try { list = ThemeLibraryService.GetAvailableThemes(); }
+                catch (Exception ex) { error = ex.Message; }
+                lock (themeWorkerLock)
+                {
+                    if (updateShuttingDown) return;
+                    themeCatalogResult = list;
+                    themeCatalogError = error;
+                    themeCatalogPending = true;
+                    themeCatalogRunning = false;
+                }
+            });
+        }
+
+        // All VVS operations (including SetStatus) must stay on the render thread.
+        private void FinishThemeWorkers()
+        {
+            List<GithubThemeItem> list = null;
+            string catalogError = null, installedPath = null, installError = null;
+            string submittedId = null, submitError = null;
+            GithubThemeItem installedItem = null;
+            bool catalogueDone = false, installDone = false, uploadDone = false;
+            lock (themeWorkerLock)
+            {
+                if (themeCatalogPending)
+                {
+                    catalogueDone = true;
+                    list = themeCatalogResult;
+                    catalogError = themeCatalogError;
+                    themeCatalogPending = false;
+                }
+                if (themeInstallPending)
+                {
+                    installDone = true;
+                    installedPath = themeInstallPath;
+                    installError = themeInstallError;
+                    installedItem = installingTheme;
+                    themeInstallPending = false;
+                }
+                if (uploadPending)
+                {
+                    uploadDone = true;
+                    submittedId = uploadResultId;
+                    submitError = uploadResultError;
+                    uploadPending = false;
+                }
+            }
+            if (catalogueDone)
+            {
+                if (catalogError == null)
+                {
+                    string previous = SelectedOfficialTheme() != null
+                        ? SelectedOfficialTheme().Name : null;
+                    availableThemes.Clear();
+                    availableThemes.AddRange(list);
+                    themeCatalogReady = true;
+                    selectedOfficialTheme = -1;
+                    if (!String.IsNullOrEmpty(previous))
+                        for (int i = 0; i < availableThemes.Count; ++i)
+                            if (String.Equals(availableThemes[i].Name, previous,
+                                StringComparison.OrdinalIgnoreCase)) { selectedOfficialTheme = i; break; }
+                    if (selectedOfficialTheme < 0 && availableThemes.Count > 0)
+                        selectedOfficialTheme = 0;
+                    int updates = CountThemeUpdates();
+                    themesFeedback = availableThemes.Count == 0
+                        ? "No themes yet. Add PNGs to GitHub themes/."
+                        : updates > 0
+                        ? updates + " theme update(s) available."
+                        : availableThemes.Count + " available theme(s).";
+                    if (updates > 0)
+                        SetStatus(updates + " community theme update(s) available in Themes.");
+                    nextThemeRetryUtc = DateTime.MaxValue;
+                }
+                else
+                {
+                    themesFeedback = !themeCatalogReady
+                        ? "Could not load GitHub themes. Press Refresh."
+                        : "GitHub unavailable. Showing last known themes.";
+                    nextThemeRetryUtc = DateTime.UtcNow.AddSeconds(90);
+                    AppendMappingUpdateLog("Theme library check failed: " + catalogError);
+                }
+                RefreshThemesTab();
+            }
+            if (installDone)
+            {
+                if (installError != null)
+                {
+                    themesFeedback = "Install failed: " + Shorten(installError, 80);
+                    AppendMappingUpdateLog("Theme install failed: " + installError);
+                }
+                else
+                {
+                    try
+                    {
+                        SelectThemePng(installedPath);
+                        themesFeedback = System.IO.Path.GetFileName(installedPath) +
+                            " installed. Generate Textures on Theme tab.";
+                        SetStatus(themesFeedback);
+                        AppendMappingUpdateLog("Official theme installed: " + installedItem.Name);
+                    }
+                    catch (Exception ex)
+                    {
+                        themesFeedback = "Theme installed; selection failed: " + ex.Message;
+                    }
+                }
+                RefreshThemesTab();
+            }
+            if (uploadDone)
+            {
+                uploadFeedback = submitError == null
+                    ? "Submitted for review. Receipt: " + Shorten(submittedId, 20)
+                    : "Submission failed: " + Shorten(submitError, 85);
+                if (submitError == null) SetStatus("Theme submitted for review.");
+                RefreshUploadTab();
+            }
+        }
+
+        private int CountThemeUpdates()
+        {
+            int count = 0;
+            foreach (GithubThemeItem item in availableThemes)
+                if (ThemeLibraryService.State(item) == "Update available") ++count;
+            return count;
+        }
+
+        private GithubThemeItem SelectedOfficialTheme()
+        {
+            return selectedOfficialTheme >= 0 && selectedOfficialTheme < availableThemes.Count
+                ? availableThemes[selectedOfficialTheme] : null;
+        }
+
+        private void RefreshThemesTab()
+        {
+            if (themesList == null) return;
+            while (themesList.RowCount > 0)
+                themesList.RemoveRow(themesList.RowCount - 1);
+            foreach (GithubThemeItem item in availableThemes)
+            {
+                HudList.HudListRowAccessor row = themesList.AddRow();
+                HudStaticText label = (HudStaticText)row[0];
+                HudStaticText state = (HudStaticText)row[1];
+                label.Text = Shorten(System.IO.Path.GetFileNameWithoutExtension(item.Name), 26);
+                state.Text = ThemeLibraryService.State(item);
+                TrySetColor(label, UiBodyText);
+                TrySetColor(state, state.Text == "Update available" ? UiGold :
+                    state.Text == "Installed" ? UiGreen : UiMuted);
+            }
+            RefreshThemeActions();
+        }
+
+        private void RefreshThemeActions()
+        {
+            GithubThemeItem selected = SelectedOfficialTheme();
+            if (themesStatus != null)
+            {
+                themesStatus.Text = Shorten(themesFeedback, 69);
+                TrySetColor(themesStatus, CountThemeUpdates() > 0 ? UiGold : UiBodyText);
+            }
+            bool busy;
+            lock (themeWorkerLock) busy = themeInstallRunning;
+            ChangeButtonArtworkText("ThemesInstall", busy ? "Downloading..." :
+                selected == null ? "Install/Update" :
+                ThemeLibraryService.State(selected) == "Not installed" ? "Install" :
+                ThemeLibraryService.State(selected) == "Update available" ? "Update" : "Installed");
+            TrySetVvsVisibility(themesInstall,
+                selected != null && !busy && ThemeLibraryService.State(selected) != "Installed");
+            TrySetVvsVisibility(themesUse,
+                selected != null && !busy && ThemeLibraryService.InstalledSha(selected) != null);
+        }
+
+        private void ThemesList_Click(object sender, int row, int col)
+        {
+            if (row < 0 || row >= availableThemes.Count) return;
+            selectedOfficialTheme = row;
+            GithubThemeItem item = SelectedOfficialTheme();
+            themesFeedback = System.IO.Path.GetFileNameWithoutExtension(item.Name) + ": " +
+                ThemeLibraryService.State(item);
+            RefreshThemeActions();
+        }
+
+        private void ThemesRefresh_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
+                BeginThemeCatalogCheck(true);
+        }
+
+        private void ThemesInstall_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
+            GithubThemeItem item = SelectedOfficialTheme();
+            if (item == null) return;
+            if (IsTemplateBuildRunning())
+            {
+                themesFeedback = "Wait for texture generation to finish.";
+                RefreshThemesTab();
+                return;
+            }
+            lock (themeWorkerLock)
+            {
+                if (themeInstallRunning || themeInstallPending ||
+                    ThemeLibraryService.State(item) == "Installed") return;
+                themeInstallRunning = true;
+                installingTheme = item;
+            }
+            themesFeedback = "Downloading and checking " + item.Name + "...";
+            RefreshThemesTab();
+            ThreadPool.QueueUserWorkItem(delegate(object unused)
+            {
+                string path = null, error = null;
+                try { path = ThemeLibraryService.Install(item); }
+                catch (Exception ex) { error = ex.Message; }
+                lock (themeWorkerLock)
+                {
+                    if (updateShuttingDown) return;
+                    themeInstallPath = path;
+                    themeInstallError = error;
+                    themeInstallPending = true;
+                    themeInstallRunning = false;
+                }
+            });
+        }
+
+        private void ThemesUse_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
+            GithubThemeItem item = SelectedOfficialTheme();
+            if (item == null || ThemeLibraryService.InstalledSha(item) == null) return;
+            if (IsTemplateBuildRunning())
+            {
+                themesFeedback = "Wait for texture generation to finish.";
+                RefreshThemesTab();
+                return;
+            }
+            try
+            {
+                string file = ThemeLibraryService.ThemePath(item);
+                ThemeLibraryService.ValidatePng(file);
+                SelectThemePng(file);
+                themesFeedback = item.Name + " selected. Generate Textures on Theme tab.";
+                RefreshThemesTab();
+                SetStatus(themesFeedback);
+            }
+            catch (Exception ex)
+            {
+                themesFeedback = "Could not select theme: " + ex.Message;
+                RefreshThemesTab();
+            }
+        }
+
+        private void SelectThemePng(string file)
+        {
+            selectedTemplatePng = System.IO.Path.GetFullPath(file);
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(TemplateSourceSettingsPath));
+            File.WriteAllText(TemplateSourceSettingsPath, selectedTemplatePng);
+            RefreshTemplateStatus();
+        }
+
+        private void RefreshUploadTab()
+        {
+            if (uploadFilename != null)
+                uploadFilename.Text = String.IsNullOrEmpty(selectedUploadPng)
+                    ? "No PNG selected"
+                    : Shorten(System.IO.Path.GetFileName(selectedUploadPng), 35);
+            if (uploadStatus != null)
+            {
+                uploadStatus.Text = Shorten(uploadFeedback, 100);
+                TrySetColor(uploadStatus, UiBodyText);
+            }
+            bool busy;
+            lock (themeWorkerLock) busy = uploadRunning;
+            ChangeButtonArtworkText("UploadSubmit", busy ? "Uploading..." : "Submit for Review");
+            TrySetVvsVisibility(uploadSubmit, !busy && !String.IsNullOrEmpty(selectedUploadPng));
+        }
+
+        private void UploadBrowse_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
+            try
+            {
+                using (var dialog = new System.Windows.Forms.OpenFileDialog())
+                {
+                    dialog.Filter = "Theme PNG (*.png)|*.png";
+                    dialog.Title = "Choose 2000 x 2000 Theme PNG to Share";
+                    if (!String.IsNullOrEmpty(selectedTemplatePng) && File.Exists(selectedTemplatePng))
+                        dialog.FileName = selectedTemplatePng;
+                    if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+                    ThemeLibraryService.ValidatePng(dialog.FileName);
+                    if (!ThemeLibraryService.IsSafeName(System.IO.Path.GetFileName(dialog.FileName)))
+                        throw new InvalidDataException("Use a simple PNG filename (letters, numbers, spaces). ");
+                    selectedUploadPng = System.IO.Path.GetFullPath(dialog.FileName);
+                    uploadFeedback = "Validated 2000 x 2000 PNG. Ready for submission.";
+                }
+            }
+            catch (Exception ex)
+            {
+                selectedUploadPng = String.Empty;
+                uploadFeedback = "Invalid file: " + ex.Message;
+            }
+            RefreshUploadTab();
+        }
+
+        private void UploadSubmit_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
+                String.IsNullOrWhiteSpace(selectedUploadPng)) return;
+            lock (themeWorkerLock)
+            {
+                if (uploadRunning || uploadPending) return;
+                uploadRunning = true;
+            }
+            string source = selectedUploadPng;
+            uploadFeedback = "Submitting to AC Customs website...";
+            RefreshUploadTab();
+            ThreadPool.QueueUserWorkItem(delegate(object unused)
+            {
+                string receipt = null, error = null;
+                try { receipt = ThemeLibraryService.SubmitTheme(source); }
+                catch (Exception ex) { error = ex.Message; }
+                lock (themeWorkerLock)
+                {
+                    if (updateShuttingDown) return;
+                    uploadResultId = receipt;
+                    uploadResultError = error;
+                    uploadPending = true;
+                    uploadRunning = false;
+                }
+            });
         }
 
         private void AdvancedCheckUpdates_MouseEvent(object sender, ControlMouseEventArgs e)
