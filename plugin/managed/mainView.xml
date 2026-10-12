@@ -21,12 +21,9 @@
       <page label="  Share  ">
         <control progid="DecalControls.FixedLayout" name="UploadPageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="UploadHeader" left="18" top="13" width="394" height="26" fontface="Arial" fontsize="16" fontstyle="bold" text="SHARE YOUR THEME" />
-          <control progid="DecalControls.StaticText" name="UploadIntro" left="18" top="44" width="394" height="39" fontface="Arial" fontsize="11" text="Submit a 2000 x 2000 PNG for community review." />
-          <control progid="DecalControls.StaticText" name="UploadFilename" left="18" top="97" width="257" height="23" fontface="Arial" fontsize="11" text="No PNG selected" />
-          <control progid="DecalControls.PushButton" name="UploadBrowse" left="282" top="90" width="130" height="31" fontface="Arial" fontsize="11" text="Select PNG" />
-          <control progid="DecalControls.StaticText" name="UploadGuidelines" left="18" top="137" width="394" height="42" fontface="Arial" fontsize="11" text="Share only artwork you have permission to publish. All submissions are reviewed before appearing in Themes." />
-          <control progid="DecalControls.StaticText" name="UploadStatus" left="18" top="183" width="394" height="24" fontface="Arial" fontsize="11" text="Choose a PNG to prepare your submission." />
-          <control progid="DecalControls.PushButton" name="UploadSubmit" left="18" top="215" width="394" height="31" fontface="Arial" fontsize="11" fontstyle="bold" text="Submit for Review" />
+          <control progid="DecalControls.StaticText" name="UploadIntro" left="18" top="44" width="394" height="39" fontface="Arial" fontsize="11" text="Upload your custom UI to the AC Customs community website." />
+          <control progid="DecalControls.StaticText" name="UploadStatus" left="18" top="153" width="394" height="26" fontface="Arial" fontsize="11" text="Opens the AC Customs website in your browser." />
+          <control progid="DecalControls.PushButton" name="UploadSubmit" left="18" top="103" width="394" height="32" fontface="Arial" fontsize="11" text="Submit Your Theme" />
           <control progid="DecalControls.StaticText" name="TemplateDownloadLabel" left="18" top="260" width="220" height="22" fontface="Arial" fontsize="12" text="Create your own UI..." />
           <control progid="DecalControls.PushButton" name="TemplateDownload" left="252" top="256" width="160" height="29" fontface="Arial" fontsize="11" text="Download Template" />
           <control progid="DecalControls.StaticText" name="TemplateDownloadStatus" left="18" top="287" width="394" height="18" fontface="Arial" fontsize="10" text="Official 2000 x 2000 PNG template." />

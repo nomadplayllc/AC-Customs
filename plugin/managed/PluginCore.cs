@@ -645,10 +645,10 @@ namespace ACCustoms
             themesAddLocal = (HudButton)view["ThemesAddLocal"];
             uploadHeader = (HudStaticText)view["UploadHeader"];
             uploadIntro = (HudStaticText)view["UploadIntro"];
-            uploadFilename = (HudStaticText)view["UploadFilename"];
-            uploadGuidelines = (HudStaticText)view["UploadGuidelines"];
+            uploadFilename = null;
+            uploadGuidelines = null;
             uploadStatus = (HudStaticText)view["UploadStatus"];
-            uploadBrowse = (HudButton)view["UploadBrowse"];
+            uploadBrowse = null;
             uploadSubmit = (HudButton)view["UploadSubmit"];
             templateDownload = (HudButton)view["TemplateDownload"];
             templateDownloadStatus = (HudStaticText)view["TemplateDownloadStatus"];
@@ -685,7 +685,6 @@ namespace ACCustoms
             themesInstall.MouseEvent += ThemesInstall_MouseEvent;
             themesUse.MouseEvent += ThemesUse_MouseEvent;
             themesAddLocal.MouseEvent += ThemesAddLocal_MouseEvent;
-            uploadBrowse.MouseEvent += UploadBrowse_MouseEvent;
             uploadSubmit.MouseEvent += UploadSubmit_MouseEvent;
             templateDownload.MouseEvent += TemplateDownload_MouseEvent;
             if (viewHasUpdateTab)
@@ -773,12 +772,10 @@ namespace ACCustoms
                 UiSecondaryButton, 112, 31, 13, false);
             RegisterButtonArtwork("ThemesUse", themesUse, "Apply",
                 UiAdvancedButton, 91, 31, 13, false);
-            RegisterButtonArtwork("UploadBrowse", uploadBrowse, "Select PNG",
-                UiAdvancedButton, 130, 31, 13, false);
             RegisterButtonArtwork("TemplateDownload", templateDownload, "Download Template",
                 UiSecondaryButton, 160, 29, 13, false);
-            RegisterButtonArtwork("UploadSubmit", uploadSubmit, "Submit for Review",
-                UiPrimaryButton, 394, 32, 13, true);
+            RegisterButtonArtwork("UploadSubmit", uploadSubmit, "Submit Your Theme",
+                UiPrimaryButton, 394, 32, 13, false);
             RegisterButtonArtwork("AdvancedOptions", AdvancedOptions, "Change Mapping",
                 UiAdvancedButton, 138, 28, 13, false);
             RegisterButtonArtwork("AdvancedUseDefault", AdvancedUseDefault, "Use Default",
@@ -977,7 +974,6 @@ namespace ACCustoms
             if (themesInstall != null) themesInstall.MouseEvent -= ThemesInstall_MouseEvent;
             if (themesUse != null) themesUse.MouseEvent -= ThemesUse_MouseEvent;
             if (themesAddLocal != null) themesAddLocal.MouseEvent -= ThemesAddLocal_MouseEvent;
-            if (uploadBrowse != null) uploadBrowse.MouseEvent -= UploadBrowse_MouseEvent;
             if (uploadSubmit != null) uploadSubmit.MouseEvent -= UploadSubmit_MouseEvent;
             if (templateDownload != null) templateDownload.MouseEvent -= TemplateDownload_MouseEvent;
             if (updateOpenFolderButton != null) updateOpenFolderButton.MouseEvent -= UpdateOpenFolder_MouseEvent;
@@ -1413,15 +1409,12 @@ namespace ACCustoms
             TryNotebookControlRect("ThemesInstall", 228 + dx / 2, 248 + dy, 88, 31);
             TryNotebookControlRect("ThemesUse", 321 + dx, 248 + dy, 91, 31);
 
-            // Upload page: filename and footer grow with the window.
+            // Share page: open the hosted submission form; no in-plugin upload.
             TryNotebookControlRect("UploadHeader", 18, 13, 394 + dx, 26);
             TryNotebookControlRect("UploadIntro", 18, 44, 394 + dx, 39);
-            TryNotebookControlRect("UploadFilename", 18, 97, 257 + dx, 23);
-            TryNotebookControlRect("UploadBrowse", 282 + dx, 90, 130, 31);
-            TryNotebookControlRect("UploadGuidelines", 18, 137, 394 + dx, 42);
-            TryNotebookControlRect("UploadStatus", 18, 183, 394 + dx, 24);
-            TryNotebookControlRect("UploadSubmit", 18, 215, 394 + dx, 31);
-            ResizeButtonArtwork("UploadSubmit", 394 + dx, 31);
+            TryNotebookControlRect("UploadSubmit", 18, 103, 394 + dx, 32);
+            ResizeButtonArtwork("UploadSubmit", 394 + dx, 32);
+            TryNotebookControlRect("UploadStatus", 18, 153, 394 + dx, 26);
             TryNotebookControlRect("TemplateDownloadLabel", 18, 260 + dy, 185 + dx, 24);
             TryNotebookControlRect("TemplateDownload", 252 + dx, 256 + dy, 160, 29);
             TryNotebookControlRect("TemplateDownloadStatus", 18, 287 + dy, 394 + dx, 18);
@@ -1967,76 +1960,37 @@ namespace ACCustoms
             }
         }
 
+        // Community submissions are hosted on the website. Do not attempt
+        // to upload PNGs from the game client or require local file selection.
+        private const string CommunityThemeSubmissionUrl =
+            "https://ac-customs.mrgrid.chatgpt.site/themes/";
+
         private void RefreshUploadTab()
         {
-            if (uploadFilename != null)
-                uploadFilename.Text = String.IsNullOrEmpty(selectedUploadPng)
-                    ? "No PNG selected"
-                    : Shorten(System.IO.Path.GetFileName(selectedUploadPng), 35);
-            if (uploadStatus != null)
-            {
-                uploadStatus.Text = Shorten(uploadFeedback, 100);
-                TrySetColor(uploadStatus, UiBodyText);
-            }
-            bool busy;
-            lock (themeWorkerLock) busy = uploadRunning;
-            ChangeButtonArtworkText("UploadSubmit", busy ? "Uploading..." : "Submit for Review");
-            TrySetVvsVisibility(uploadSubmit, !busy && !String.IsNullOrEmpty(selectedUploadPng));
-        }
-
-        private void UploadBrowse_MouseEvent(object sender, ControlMouseEventArgs e)
-        {
-            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
-            try
-            {
-                using (var dialog = new System.Windows.Forms.OpenFileDialog())
-                {
-                    dialog.Filter = "Theme PNG (*.png)|*.png";
-                    dialog.Title = "Choose 2000 x 2000 Theme PNG to Share";
-                    if (!String.IsNullOrEmpty(selectedTemplatePng) && File.Exists(selectedTemplatePng))
-                        dialog.FileName = selectedTemplatePng;
-                    if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
-                    ThemeLibraryService.ValidatePng(dialog.FileName);
-                    if (!ThemeLibraryService.IsSafeName(System.IO.Path.GetFileName(dialog.FileName)))
-                        throw new InvalidDataException("Use a simple PNG filename (letters, numbers, spaces). ");
-                    selectedUploadPng = System.IO.Path.GetFullPath(dialog.FileName);
-                    uploadFeedback = "Validated 2000 x 2000 PNG. Ready for submission.";
-                }
-            }
-            catch (Exception ex)
-            {
-                selectedUploadPng = String.Empty;
-                uploadFeedback = "Invalid file: " + ex.Message;
-            }
-            RefreshUploadTab();
+            if (uploadStatus == null) return;
+            if (String.IsNullOrWhiteSpace(uploadFeedback) ||
+                uploadFeedback == "Select a PNG to prepare a submission.")
+                uploadFeedback = "Opens the AC Customs website in your browser.";
+            uploadStatus.Text = Shorten(uploadFeedback, 100);
+            TrySetColor(uploadStatus, UiBodyText);
         }
 
         private void UploadSubmit_MouseEvent(object sender, ControlMouseEventArgs e)
         {
-            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
-                String.IsNullOrWhiteSpace(selectedUploadPng)) return;
-            lock (themeWorkerLock)
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
+            try
             {
-                if (uploadRunning || uploadPending) return;
-                uploadRunning = true;
-            }
-            string source = selectedUploadPng;
-            uploadFeedback = "Submitting to AC Customs website...";
-            RefreshUploadTab();
-            ThreadPool.QueueUserWorkItem(delegate(object unused)
-            {
-                string receipt = null, error = null;
-                try { receipt = ThemeLibraryService.SubmitTheme(source); }
-                catch (Exception ex) { error = ex.Message; }
-                lock (themeWorkerLock)
+                Process.Start(new ProcessStartInfo(CommunityThemeSubmissionUrl)
                 {
-                    if (updateShuttingDown) return;
-                    uploadResultId = receipt;
-                    uploadResultError = error;
-                    uploadPending = true;
-                    uploadRunning = false;
-                }
-            });
+                    UseShellExecute = true
+                });
+                uploadFeedback = "Opened AC Customs theme submissions in your browser.";
+            }
+            catch (Exception ex)
+            {
+                uploadFeedback = "Could not open browser: " + ex.Message;
+            }
+            RefreshUploadTab();
         }
 
         private void AdvancedCheckUpdates_MouseEvent(object sender, ControlMouseEventArgs e)
