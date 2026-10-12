@@ -21,6 +21,7 @@
     <control progid="DecalControls.StaticText" name="CurrentUiText" left="18" top="231" width="394" height="26" fontface="Arial" fontsize="13" fontstyle="bold" text="Current Theme: AC Default" />
     <control progid="DecalControls.StaticText" name="StatusText" left="18" top="259" width="394" height="34" fontface="Arial" fontsize="13" fontstyle="bold" text="" />
 
+    <control progid="DecalControls.PushButton" name="AvailableUpdate" left="18" top="294" width="171" height="26" fontface="Arial" fontsize="11" fontstyle="bold" text="Available Update" />
     <control progid="DecalControls.PushButton" name="AdvancedOptions" left="318" top="294" width="94" height="26" fontface="Arial" fontsize="10" text="Advanced" />
 
     <!-- DEPRECATED: .acui selector/import controls no longer exposed.

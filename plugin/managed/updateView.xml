@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<view icon="8712" title="AC Customs - Mapping Update" width="480" height="446">
+  <control progid="DecalControls.FixedLayout" clipped="">
+    <control progid="DecalControls.StaticText" name="UpdateHeader" left="18" top="13" width="442" height="30" fontface="Arial" fontsize="17" fontstyle="bold" text="MAPPING UPDATE AVAILABLE" />
+    <control progid="DecalControls.StaticText" name="UpdateInstalled" left="19" top="53" width="444" height="22" fontface="Arial" fontsize="12" text="Current mappings: Bundled" />
+    <control progid="DecalControls.StaticText" name="UpdateAvailable" left="19" top="78" width="444" height="24" fontface="Arial" fontsize="13" fontstyle="bold" text="Available: v1.01" />
+    <control progid="DecalControls.StaticText" name="UpdateNotesHeader" left="19" top="113" width="444" height="22" fontface="Arial" fontsize="12" fontstyle="bold" text="PATCH NOTES" />
+    <control progid="DecalControls.StaticText" name="UpdateNote1" left="24" top="143" width="438" height="19" fontface="Arial" fontsize="11" text="" />
+    <control progid="DecalControls.StaticText" name="UpdateNote2" left="24" top="164" width="438" height="19" fontface="Arial" fontsize="11" text="" />
+    <control progid="DecalControls.StaticText" name="UpdateNote3" left="24" top="185" width="438" height="19" fontface="Arial" fontsize="11" text="" />
+    <control progid="DecalControls.StaticText" name="UpdateNote4" left="24" top="206" width="438" height="19" fontface="Arial" fontsize="11" text="" />
+    <control progid="DecalControls.StaticText" name="UpdateNote5" left="24" top="227" width="438" height="19" fontface="Arial" fontsize="11" text="" />
+    <control progid="DecalControls.StaticText" name="UpdateInstructionsTitle" left="19" top="256" width="444" height="21" fontface="Arial" fontsize="12" fontstyle="bold" text="HOW TO INSTALL (MANUAL)" />
+    <control progid="DecalControls.StaticText" name="UpdateInstruction1" left="24" top="281" width="438" height="18" fontface="Arial" fontsize="11" text="1. Click Download to save the release to your Downloads folder." />
+    <control progid="DecalControls.StaticText" name="UpdateInstruction2" left="24" top="302" width="438" height="18" fontface="Arial" fontsize="11" text="2. Advanced > Change Mapping: choose the new mapping JSON." />
+    <control progid="DecalControls.StaticText" name="UpdateInstruction3" left="24" top="323" width="438" height="18" fontface="Arial" fontsize="11" text="3. Optionally use the new default PNG as your art template." />
+    <control progid="DecalControls.StaticText" name="UpdateInstruction4" left="24" top="344" width="438" height="18" fontface="Arial" fontsize="11" text="4. Click Generate Textures, then Apply UI." />
+    <control progid="DecalControls.StaticText" name="UpdateDownloadStatus" left="20" top="376" width="442" height="22" fontface="Arial" fontsize="11" text="Your custom PNGs are not modified." />
+    <control progid="DecalControls.PushButton" name="UpdateClose" left="18" top="404" width="112" height="28" fontface="Arial" fontsize="11" text="Close" />
+    <control progid="DecalControls.PushButton" name="UpdateOpenFolder" left="141" top="404" width="152" height="28" fontface="Arial" fontsize="11" text="Open Folder" />
+    <control progid="DecalControls.PushButton" name="UpdateDownload" left="303" top="404" width="159" height="28" fontface="Arial" fontsize="11" fontstyle="bold" text="Download Update" />
+  </control>
+</view>

@@ -1,0 +1,22 @@
+{
+  "mappingVersion": "1.01",
+  "minimumPluginVersion": "1.3.0",
+  "changelog": [
+    "Initial official mapping release (391 texture mappings)."
+  ],
+  "files": {
+    "mapping": "versions/v1.01/template_mapping_v1.01.json",
+    "template": "versions/v1.01/DefaultTemplate_v1.01.png",
+    "darkMode": "versions/v1.01/DarkMode_v1.01.png"
+  },
+  "sha256": {
+    "mapping": "75d8106153fb2e674aa1f5bb04f283b3fca91a7a02248308f83f75f3c99d9a67",
+    "template": "cae2592bedc242ebcc9e293b9d61a81d2710dc8283fc24050632f12f176e3069",
+    "darkMode": "da97477fc057ef092a4acc13d289f2859e6dfa905ae5ea4bc1df7ebba0730ce4"
+  },
+  "bytes": {
+    "mapping": 47363,
+    "template": 915880,
+    "darkMode": 664080
+  }
+}

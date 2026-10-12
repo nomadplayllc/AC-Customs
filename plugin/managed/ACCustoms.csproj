@@ -62,12 +62,16 @@
     <Compile Include="NativeBridge.cs" />
     <Compile Include="PackManager.cs" />
     <Compile Include="TemplateTextureCompiler.cs" />
+    <Compile Include="MappingUpdateService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="mainView.xml">
       <LogicalName>ACCustoms.mainView.xml</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="updateView.xml">
+      <LogicalName>ACCustoms.updateView.xml</LogicalName>
     </EmbeddedResource>
     <!-- Official mapping bundled in the managed DLL: no JSON selection required. -->
     <EmbeddedResource Include="Assets\template_mapping.json">

@@ -255,6 +255,120 @@ static bool TemplateEditorExportMasterAndMappings(HWND owner)
     return true;
 }
 
+
+
+// Export a transparent, pixel-accurate overlay of the currently active
+// mapping rectangles. The white frame is exactly the 2000x2000 image border.
+// Each pink/cyan mapping border is drawn 1 pixel OUTSIDE the mapped texture
+// rectangle where possible, so a 10x10 mapping produces a 12x12 outline.
+static bool TemplateEditorExportMappingsOverlay(HWND owner)
+{
+    TemplateEditorEnsureLoaded();
+
+    wchar_t filename[32768] = L"Mappings.png";
+    OPENFILENAMEW dialog = {};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = L"PNG Images (*.png)\0*.png\0\0";
+    dialog.lpstrFile = filename;
+    dialog.nMaxFile = static_cast<DWORD>(_countof(filename));
+    dialog.lpstrTitle = L"Export Transparent 2000 x 2000 Mapping Overlay";
+    dialog.lpstrDefExt = L"png";
+    dialog.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&dialog)) return false;
+
+    constexpr unsigned side = 2000u;
+    std::vector<BYTE> pixels(static_cast<std::size_t>(side) * side * 4u, 0u);
+
+    auto setPixel = [&](unsigned x, unsigned y, BYTE blue, BYTE green, BYTE red)
+    {
+        if (x >= side || y >= side) return;
+        const std::size_t offset =
+            (static_cast<std::size_t>(y) * side + static_cast<std::size_t>(x)) * 4u;
+        pixels[offset] = blue;
+        pixels[offset + 1u] = green;
+        pixels[offset + 2u] = red;
+        pixels[offset + 3u] = 255u;
+    };
+
+    for (const auto& entry : g_TemplateEditorEntries)
+    {
+        if (!TemplateEditorValidate(entry))
+        {
+            g_TemplateEditorError = true;
+            g_TemplateEditorStatus =
+                "Cannot export Mappings.png because at least one mapping is invalid.";
+            return false;
+        }
+
+        const BYTE blue = entry.pixelFormat == 0x15u ? 240u : 210u;
+        const BYTE green = entry.pixelFormat == 0x15u ? 220u : 0u;
+        const BYTE red = entry.pixelFormat == 0x15u ? 0u : 250u;
+
+        const int left = static_cast<int>(entry.x) - 1;
+        const int top = static_cast<int>(entry.y) - 1;
+        const int right = static_cast<int>(entry.x + entry.w);
+        const int bottom = static_cast<int>(entry.y + entry.h);
+
+        const unsigned x0 = static_cast<unsigned>(max(0, left));
+        const unsigned y0 = static_cast<unsigned>(max(0, top));
+        const unsigned x1 = static_cast<unsigned>(min(static_cast<int>(side - 1u), right));
+        const unsigned y1 = static_cast<unsigned>(min(static_cast<int>(side - 1u), bottom));
+
+        for (unsigned x = x0; x <= x1; ++x)
+        {
+            setPixel(x, y0, blue, green, red);
+            setPixel(x, y1, blue, green, red);
+        }
+        for (unsigned y = y0; y <= y1; ++y)
+        {
+            setPixel(x0, y, blue, green, red);
+            setPixel(x1, y, blue, green, red);
+        }
+    }
+
+    for (unsigned x = 0; x < side; ++x)
+    {
+        setPixel(x, 0u, 255u, 255u, 255u);
+        setPixel(x, side - 1u, 255u, 255u, 255u);
+    }
+    for (unsigned y = 0; y < side; ++y)
+    {
+        setPixel(0u, y, 255u, 255u, 255u);
+        setPixel(side - 1u, y, 255u, 255u, 255u);
+    }
+
+    std::vector<BYTE> png;
+    if (!EncodeBgraAsPng(pixels, side, side, png) || png.empty())
+    {
+        g_TemplateEditorError = true;
+        g_TemplateEditorStatus = "Could not encode the transparent mapping overlay PNG.";
+        return false;
+    }
+
+    const std::wstring destination = filename;
+    const std::wstring staged = destination + L".tmp";
+    if (!WriteBinaryFile(staged, png) ||
+        !MoveFileExW(staged.c_str(), destination.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        DeleteFileW(staged.c_str());
+        g_TemplateEditorError = true;
+        g_TemplateEditorStatus = "Could not save Mappings.png. Check destination permissions.";
+        return false;
+    }
+
+    g_TemplateEditorError = false;
+    g_TemplateEditorStatus = "Exported transparent 2000 x 2000 Mappings.png with " +
+        std::to_string(g_TemplateEditorEntries.size()) + " mapping outlines.";
+    if (owner && IsWindow(owner))
+    {
+        BringWindowToTop(owner);
+        SetForegroundWindow(owner);
+    }
+    return true;
+}
+
 static int g_TemplateEditorSelected = -1;
 static float g_TemplateEditorZoom = 1.0f;
 static ImVec2 g_TemplateEditorPan(0,0);
@@ -277,7 +391,94 @@ static bool TemplateEditorEnsureAtlas()
 static void TemplateEditorSelect(int index)
 {
     g_TemplateEditorSelected = index;
-    g_TemplateEditorDraftSelected = -2;
+}
+
+
+
+// Import the same schema already used by the editor override and the plugin's
+// template_mapping.json. The loaded mappings fully replace the current set.
+static std::vector<TemplateEditorEntry> g_TemplateEditorPendingImport;
+static std::uint32_t g_TemplateEditorPendingImportCrc32 = 0u;
+
+static bool TemplateEditorChooseMappingsImport(HWND owner)
+{
+    wchar_t filename[32768] = {};
+    OPENFILENAMEW dialog = {};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = L"AC Customs Mapping JSON (*.json)\0*.json\0\0";
+    dialog.lpstrFile = filename;
+    dialog.nMaxFile = static_cast<DWORD>(_countof(filename));
+    dialog.lpstrTitle = L"Import Mapping JSON (Replace All Current Mappings)";
+    dialog.lpstrDefExt = L"json";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+        OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&dialog)) return false;
+
+    std::vector<BYTE> bytes;
+    if (!ReadBinaryFile(filename, bytes) || bytes.empty())
+    {
+        g_TemplateEditorError = true;
+        g_TemplateEditorStatus = "Could not read the selected mapping JSON file.";
+        return false;
+    }
+
+    std::vector<TemplateEditorEntry> parsed;
+    if (!TemplateEditorParseFile(bytes, parsed) || parsed.empty())
+    {
+        g_TemplateEditorError = true;
+        g_TemplateEditorStatus =
+            "Invalid mapping JSON. Expected a 2000 x 2000 template mapping file. Nothing changed.";
+        return false;
+    }
+
+    const std::string json(bytes.begin(), bytes.end());
+    std::uint32_t crc = 0u;
+    if (!JsonHexField(json, "pixelCrc32", crc))
+    {
+        g_TemplateEditorError = true;
+        g_TemplateEditorStatus = "The imported mapping JSON is missing a valid pixelCrc32 value.";
+        return false;
+    }
+
+    g_TemplateEditorPendingImport = std::move(parsed);
+    g_TemplateEditorPendingImportCrc32 = crc;
+    g_TemplateEditorError = false;
+    g_TemplateEditorStatus = "Loaded mapping JSON. Confirm to replace all current mappings.";
+    if (owner && IsWindow(owner))
+    {
+        BringWindowToTop(owner);
+        SetForegroundWindow(owner);
+    }
+    return true;
+}
+
+static bool TemplateEditorApplyMappingsImport()
+{
+    if (g_TemplateEditorPendingImport.empty())
+        return false;
+
+    TemplateEditorEnsureLoaded();
+    const auto previousEntries = g_TemplateEditorEntries;
+    const auto previousRuntime = g_TemplateEditorRuntime;
+    const bool previousCustomized = g_TemplateEditorCustomized;
+    const int previousSelected = g_TemplateEditorSelected;
+
+    g_TemplateEditorEntries = g_TemplateEditorPendingImport;
+    if (!TemplateEditorSave())
+    {
+        g_TemplateEditorEntries = previousEntries;
+        g_TemplateEditorRuntime = previousRuntime;
+        g_TemplateEditorCustomized = previousCustomized;
+        g_TemplateEditorSelected = previousSelected;
+        return false;
+    }
+
+    g_TemplateEditorPendingImport.clear();
+    g_TemplateEditorPendingImportCrc32 = 0u;
+    g_TemplateEditorError = false;
+    g_TemplateEditorStatus = "Imported mapping JSON and replaced all current mappings.";
+    return true;
 }
 
 static void TemplateEditorSyncDraft()
@@ -712,6 +913,44 @@ static void TemplateEditorDrawInspector()
     if (ImGui::Button("Export Mappings for Plugin...", ImVec2(-1, 0)))
         TemplateEditorExportMappings(g_MainWindow);
     ImGui::TextWrapped("Exports only template_mapping.json for the current default master revision.");
+    ImGui::Spacing();
+    if (ImGui::Button("Export Mappings.png Overlay...", ImVec2(-1, 0)))
+        TemplateEditorExportMappingsOverlay(g_MainWindow);
+    ImGui::TextWrapped("Exports a transparent 2000 x 2000 PNG with a 1-pixel white outer border and "
+        "pink/cyan mapping borders drawn 1 pixel OUTSIDE each mapped texture region.");
+    ImGui::Spacing();
+    if (ImGui::Button("Import Mapping JSON...", ImVec2(-1, 0)) &&
+        TemplateEditorChooseMappingsImport(g_MainWindow))
+        ImGui::OpenPopup("Replace all template mappings");
+    if (ImGui::BeginPopupModal("Replace all template mappings", nullptr,
+        ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextWrapped("Replace ALL %zu current mappings with the %zu mappings from the imported JSON?",
+            g_TemplateEditorEntries.size(), g_TemplateEditorPendingImport.size());
+        if (g_TemplateEditorPendingImportCrc32 != 0u &&
+            g_TemplateEditorPendingImportCrc32 != g_TemplateEditorMasterCrc32)
+            ImGui::TextColored(MODERN_RED,
+                "Warning: the imported mapping JSON references a different master PNG revision.");
+        ImGui::TextWrapped("This will override the current mappings. Your previous local override file will be backed up as .bak.");
+        if (ImGui::Button("Replace All Mappings"))
+        {
+            if (TemplateEditorApplyMappingsImport())
+            {
+                TemplateEditorSelect(-1);
+                TemplateEditorRefreshImport();
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel"))
+        {
+            g_TemplateEditorPendingImport.clear();
+            g_TemplateEditorPendingImportCrc32 = 0u;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::TextWrapped("Imports template_mapping.json and overrides all current mappings after confirmation.");
     ImGui::Spacing();
     ImGui::TextDisabled("Local editable mapping JSON:");
     ImGui::TextWrapped("%s", FromWide(TemplateEditorMappingPath()).c_str());

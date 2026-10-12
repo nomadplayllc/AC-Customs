@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Threading;
+using System.Diagnostics;
 using VirindiViewService;
 using VirindiViewService.Controls;
 using System.Runtime.InteropServices;
@@ -22,6 +23,31 @@ namespace ACCustoms
         private HudView view;
         private HudButton ImportPack;
         private HudButton RestoreVanilla;
+        private HudButton AvailableUpdate;
+        private HudView updateView;
+        private HudStaticText updateInstalledText;
+        private HudStaticText updateAvailableText;
+        private HudStaticText updateStatusText;
+        private HudStaticText[] updateNotes;
+        private HudButton updateCloseButton;
+        private HudButton updateDownloadButton;
+        private HudButton updateOpenFolderButton;
+        private MappingRelease availableMappingRelease;
+        private string currentMappingReleaseName = "Bundled";
+        private string downloadedReleaseFolder = String.Empty;
+        private bool mappingUpdateVisible;
+        private bool updateShuttingDown;
+        private readonly object mappingUpdateWorkerLock = new object();
+        private bool mappingCheckRunning;
+        private bool mappingCheckResultPending;
+        private MappingRelease checkedMappingRelease;
+        private string mappingCheckError;
+        private DateTime lastMappingCheckUtc = DateTime.MinValue;
+        private bool mappingDownloadRunning;
+        private bool mappingDownloadResultPending;
+        private string mappingDownloadFolderResult;
+        private string mappingDownloadError;
+
         private DateTime nextViewAttemptUtc;
         private bool viewFailed;
         private string status = "Starting...";
@@ -135,6 +161,10 @@ namespace ACCustoms
                     ? "Bundled mapping error: " + mappingInstallError
                     : nativeReady ? BuildReadyStatus()
                     : "Native engine failed to initialize");
+
+                // LoginComplete triggers another check after character login.
+                // Also check once at startup if the plugin loads into an active session.
+                BeginMappingUpdateCheck();
             }
             catch (Exception ex)
             {
@@ -145,7 +175,9 @@ namespace ACCustoms
 
         protected override void Shutdown()
         {
+            updateShuttingDown = true;
             try { Core.RenderFrame -= Core_RenderFrame; } catch { }
+            try { DisposeUpdateView(); } catch { }
             try { DisposeView(); } catch { }
             try { NativeBridge.Shutdown(); } catch { }
         }
@@ -217,6 +249,7 @@ namespace ACCustoms
 
                 if (view == null)
                     Host.Actions.AddChatText("AC Customs: waiting for its VVS window. Ensure Virindi View Service is installed and enabled in Decal Services; restart AC after enabling it.", 3);
+                BeginMappingUpdateCheck();
             }
             catch (Exception ex)
             {
@@ -363,6 +396,7 @@ namespace ACCustoms
             GenerateTemplate = (HudButton)view["GenerateTemplate"];
             ApplyGeneratedTemplate = (HudButton)view["ApplyGeneratedTemplate"];
             RestoreVanilla = (HudButton)view["RestoreVanilla"];
+            AvailableUpdate = (HudButton)view["AvailableUpdate"];
 
             // DEPRECATED ACUI UI: hidden in favor of the theme + mapping workflow.
             // ImportPack, ThemeChoice, ApplyTheme handlers and PackManager remain
@@ -377,7 +411,9 @@ namespace ACCustoms
             GenerateTemplate.MouseEvent += GenerateTemplate_MouseEvent;
             ApplyGeneratedTemplate.MouseEvent += ApplyGeneratedTemplate_MouseEvent;
             RestoreVanilla.MouseEvent += RestoreVanilla_MouseEvent;
+            AvailableUpdate.MouseEvent += AvailableUpdate_MouseEvent;
             ApplyModernAppearance();
+            RefreshMappingUpdateButton();
             TryApplyCustomViewIcon();
             RefreshInstalledPacks(null);
             RefreshTemplateStatus();
@@ -429,6 +465,7 @@ namespace ACCustoms
             TrySetButtonSurface(ApplyGeneratedTemplate, Color.FromArgb(39, 89, 142));
             TrySetButtonSurface(RestoreVanilla, Color.FromArgb(29, 43, 58));
             TrySetButtonSurface(AdvancedOptions, Color.FromArgb(20, 32, 47));
+            TrySetButtonSurface(AvailableUpdate, Color.FromArgb(126, 87, 34));
         }
 
         private static void TrySetButtonSurface(object button, Color background)
@@ -468,6 +505,7 @@ namespace ACCustoms
             if (ApplyTheme != null) ApplyTheme.MouseEvent -= ApplyTheme_MouseEvent;
             if (ImportPack != null) ImportPack.MouseEvent -= ImportPack_MouseEvent;
             if (RestoreVanilla != null) RestoreVanilla.MouseEvent -= RestoreVanilla_MouseEvent;
+            if (AvailableUpdate != null) AvailableUpdate.MouseEvent -= AvailableUpdate_MouseEvent;
             if (BrowseTemplate != null) BrowseTemplate.MouseEvent -= BrowseTemplate_MouseEvent;
             if (AdvancedOptions != null) AdvancedOptions.MouseEvent -= AdvancedOptions_MouseEvent;
             if (RefreshTemplate != null) RefreshTemplate.MouseEvent -= RefreshTemplate_MouseEvent;
@@ -483,6 +521,7 @@ namespace ACCustoms
             TemplateStatusText = TemplateStatusDetail = null;
             BrandTitle = BrandSubtitle = TemplateLabel = null;
             BrowseTemplate = RefreshTemplate = GenerateTemplate = ApplyGeneratedTemplate = AdvancedOptions = null;
+            AvailableUpdate = null;
         }
 
         private void Core_RenderFrame(object sender, EventArgs e)
@@ -490,6 +529,7 @@ namespace ACCustoms
             // A background compiler never touches VVS or native hooks. Consume its
             // completion exactly once here, on the normal Decal render thread.
             FinishTemplateBuildIfReady();
+            FinishMappingUpdateWorkers();
             PollTemplateFileChanges();
             if (view != null || viewFailed || DateTime.UtcNow < nextViewAttemptUtc)
                 return;
@@ -508,6 +548,270 @@ namespace ACCustoms
                 try { DisposeView(); } catch { }
                 try { Host.Actions.AddChatText("AC Customs: VVS window failed: " + ex.Message, 3); } catch { }
             }
+        }
+
+
+        // This control is absent from the UI until a newer official mapping
+        // release has been confirmed. Reflection avoids a version-specific VVS
+        // Visible/Enabled setter, which differs between legacy VVS releases.
+        private static void TrySetVvsVisibility(object control, bool visible)
+        {
+            if (control == null) return;
+            try
+            {
+                var property = control.GetType().GetProperty("Visible");
+                if (property != null && property.CanWrite && property.PropertyType == typeof(bool))
+                    property.SetValue(control, visible, null);
+                var enabled = control.GetType().GetProperty("Enabled");
+                if (enabled != null && enabled.CanWrite && enabled.PropertyType == typeof(bool))
+                    enabled.SetValue(control, visible, null);
+            }
+            catch { /* Different VVS skins expose different presentation controls. */ }
+        }
+
+        private void BeginMappingUpdateCheck()
+        {
+            if (updateShuttingDown) return;
+            lock (mappingUpdateWorkerLock)
+            {
+                if (mappingCheckRunning ||
+                    DateTime.UtcNow - lastMappingCheckUtc < TimeSpan.FromSeconds(10)) return;
+                mappingCheckRunning = true;
+                lastMappingCheckUtc = DateTime.UtcNow;
+            }
+            ThreadPool.QueueUserWorkItem(delegate(object unused)
+            {
+                MappingRelease remote = null;
+                string error = null;
+                try { remote = MappingUpdateService.GetLatest(); }
+                catch (Exception ex) { error = ex.Message; }
+                lock (mappingUpdateWorkerLock)
+                {
+                    if (updateShuttingDown) return;
+                    checkedMappingRelease = remote;
+                    mappingCheckError = error;
+                    mappingCheckResultPending = true;
+                    mappingCheckRunning = false;
+                }
+            });
+        }
+
+        private void FinishMappingUpdateWorkers()
+        {
+            MappingRelease remote = null;
+            string checkError = null;
+            string folder = null;
+            string downloadError = null;
+            bool checkedNow = false, downloadedNow = false;
+            lock (mappingUpdateWorkerLock)
+            {
+                if (mappingCheckResultPending)
+                {
+                    checkedNow = true;
+                    remote = checkedMappingRelease;
+                    checkError = mappingCheckError;
+                    mappingCheckResultPending = false;
+                }
+                if (mappingDownloadResultPending)
+                {
+                    downloadedNow = true;
+                    folder = mappingDownloadFolderResult;
+                    downloadError = mappingDownloadError;
+                    mappingDownloadResultPending = false;
+                }
+            }
+            if (checkedNow)
+            {
+                // Network failures never prevent the plugin from operating.
+                if (remote != null)
+                {
+                    availableMappingRelease = remote;
+                    downloadedReleaseFolder = MappingUpdateService.FindVerifiedDownload(remote);
+                    RefreshMappingUpdateButton();
+                }
+                else
+                {
+                    availableMappingRelease = null;
+                    mappingUpdateVisible = false;
+                    RefreshMappingUpdateButton();
+                    // A missing or unreachable GitHub manifest is nonfatal.
+                    // Keep the regular plugin status unchanged.
+                }
+                if (updateView != null) RefreshMappingUpdateWindow();
+            }
+            if (downloadedNow)
+            {
+                if (downloadError == null)
+                {
+                    downloadedReleaseFolder = folder;
+                    if (updateStatusText != null)
+                        updateStatusText.Text = "Downloaded and verified. Open Folder to install.";
+                }
+                else if (updateStatusText != null)
+                    updateStatusText.Text = Shorten("Download failed: " + downloadError, 69);
+                if (updateDownloadButton != null)
+                    updateDownloadButton.Text = downloadError == null ? "Download Again" : "Retry Download";
+                RefreshMappingUpdateButton();
+                if (updateView != null && downloadError == null)
+                    RefreshMappingUpdateWindow();
+            }
+        }
+
+        private void RefreshMappingUpdateButton()
+        {
+            MappingRelease release = availableMappingRelease;
+            mappingUpdateVisible = false;
+            if (release != null)
+            {
+                currentMappingReleaseName = MappingUpdateService.InstalledVersion(
+                    selectedMappingJson, BundledMappingPath, release);
+                mappingUpdateVisible = MappingUpdateService.IsNewer(
+                    release.MappingVersion, currentMappingReleaseName);
+            }
+            if (AvailableUpdate != null)
+            {
+                AvailableUpdate.Text = mappingUpdateVisible ? "Available Update" : String.Empty;
+                TrySetVvsVisibility(AvailableUpdate, mappingUpdateVisible);
+            }
+        }
+
+        private void AvailableUpdate_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
+                !mappingUpdateVisible || availableMappingRelease == null) return;
+            try { ShowMappingUpdateWindow(); }
+            catch (Exception ex) { SetStatus("Update window failed: " + ex.Message); }
+        }
+
+        private void ShowMappingUpdateWindow()
+        {
+            // One independent VVS view; no changes to the main plugin window.
+            DisposeUpdateView();
+            ViewProperties properties;
+            ControlGroup controls;
+            using (Stream stream = typeof(PluginCore).Assembly.GetManifestResourceStream(
+                "ACCustoms.updateView.xml"))
+            using (var reader = new StreamReader(stream))
+                new VirindiViewService.XMLParsers.Decal3XMLParser().Parse(
+                    reader.ReadToEnd(), out properties, out controls);
+            updateView = new HudView(properties, controls, "ACCustoms.MappingUpdate");
+            updateView.ClientArea = new Size(480, 446);
+            updateInstalledText = (HudStaticText)updateView["UpdateInstalled"];
+            updateAvailableText = (HudStaticText)updateView["UpdateAvailable"];
+            updateStatusText = (HudStaticText)updateView["UpdateDownloadStatus"];
+            updateNotes = new HudStaticText[5];
+            for (int i = 0; i < updateNotes.Length; ++i)
+                updateNotes[i] = (HudStaticText)updateView["UpdateNote" + (i + 1).ToString()];
+            updateCloseButton = (HudButton)updateView["UpdateClose"];
+            updateOpenFolderButton = (HudButton)updateView["UpdateOpenFolder"];
+            updateDownloadButton = (HudButton)updateView["UpdateDownload"];
+            updateCloseButton.MouseEvent += UpdateClose_MouseEvent;
+            updateOpenFolderButton.MouseEvent += UpdateOpenFolder_MouseEvent;
+            updateDownloadButton.MouseEvent += UpdateDownload_MouseEvent;
+            RefreshMappingUpdateWindow();
+        }
+
+        private void RefreshMappingUpdateWindow()
+        {
+            if (updateView == null || availableMappingRelease == null) return;
+            currentMappingReleaseName = MappingUpdateService.InstalledVersion(
+                selectedMappingJson, BundledMappingPath, availableMappingRelease);
+            updateInstalledText.Text = "Current mappings: " + currentMappingReleaseName;
+            updateAvailableText.Text = "Available: v" + availableMappingRelease.MappingVersion;
+            List<string> notes = availableMappingRelease.Changelog ?? new List<string>();
+            for (int i = 0; i < updateNotes.Length; ++i)
+            {
+                if (i >= notes.Count) updateNotes[i].Text = String.Empty;
+                else if (i == updateNotes.Length - 1 && notes.Count > updateNotes.Length)
+                    updateNotes[i].Text = "... and " + (notes.Count - i).ToString() + " more changes";
+                else updateNotes[i].Text = "- " + Shorten(notes[i] ?? "", 64);
+            }
+            bool supported = MappingUpdateService.PluginSupported(availableMappingRelease);
+            if (!supported)
+            {
+                updateStatusText.Text = "Requires AC Customs plugin v" +
+                    availableMappingRelease.MinimumPluginVersion + " or newer.";
+                TrySetVvsVisibility(updateDownloadButton, false);
+            }
+            else
+            {
+                TrySetVvsVisibility(updateDownloadButton, true);
+                lock (mappingUpdateWorkerLock)
+                {
+                    updateStatusText.Text = mappingDownloadRunning
+                        ? "Downloading and verifying release files..."
+                        : (!String.IsNullOrEmpty(downloadedReleaseFolder)
+                            ? "Downloaded. Open Folder, then follow the steps above."
+                            : "Your custom PNGs are not modified.");
+                }
+            }
+            TrySetVvsVisibility(updateOpenFolderButton,
+                !String.IsNullOrEmpty(downloadedReleaseFolder) &&
+                System.IO.Directory.Exists(downloadedReleaseFolder));
+        }
+
+        private void DisposeUpdateView()
+        {
+            if (updateCloseButton != null) updateCloseButton.MouseEvent -= UpdateClose_MouseEvent;
+            if (updateOpenFolderButton != null) updateOpenFolderButton.MouseEvent -= UpdateOpenFolder_MouseEvent;
+            if (updateDownloadButton != null) updateDownloadButton.MouseEvent -= UpdateDownload_MouseEvent;
+            if (updateView != null) updateView.Dispose();
+            updateView = null;
+            updateInstalledText = updateAvailableText = updateStatusText = null;
+            updateCloseButton = updateOpenFolderButton = updateDownloadButton = null;
+            updateNotes = null;
+        }
+
+        private void UpdateClose_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
+                DisposeUpdateView();
+        }
+
+        private void UpdateOpenFolder_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
+                String.IsNullOrEmpty(downloadedReleaseFolder)) return;
+            try
+            {
+                if (Directory.Exists(downloadedReleaseFolder))
+                    Process.Start("explorer.exe", "\"" + downloadedReleaseFolder + "\"");
+            }
+            catch (Exception ex)
+            {
+                if (updateStatusText != null)
+                    updateStatusText.Text = Shorten("Could not open folder: " + ex.Message, 69);
+            }
+        }
+
+        private void UpdateDownload_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
+                availableMappingRelease == null ||
+                !MappingUpdateService.PluginSupported(availableMappingRelease)) return;
+            MappingRelease release = availableMappingRelease;
+            lock (mappingUpdateWorkerLock)
+            {
+                if (mappingDownloadRunning) return;
+                mappingDownloadRunning = true;
+            }
+            if (updateStatusText != null)
+                updateStatusText.Text = "Downloading and verifying release files...";
+            if (updateDownloadButton != null) updateDownloadButton.Text = "Downloading...";
+            ThreadPool.QueueUserWorkItem(delegate(object unused)
+            {
+                string folder = null, error = null;
+                try { folder = MappingUpdateService.DownloadRelease(release); }
+                catch (Exception ex) { error = ex.Message; }
+                lock (mappingUpdateWorkerLock)
+                {
+                    if (updateShuttingDown) return;
+                    mappingDownloadFolderResult = folder;
+                    mappingDownloadError = error;
+                    mappingDownloadResultPending = true;
+                    mappingDownloadRunning = false;
+                }
+            });
         }
 
         private void ApplyTheme_MouseEvent(object sender, ControlMouseEventArgs e)
@@ -730,6 +1034,7 @@ namespace ACCustoms
                 if (File.Exists(MappingSettingsPath)) File.Delete(MappingSettingsPath);
                 selectedMappingJson = BundledMappingPath;
                 RefreshTemplateStatus();
+                RefreshMappingUpdateButton();
                 SetStatus("Default mapping restored.");
             }
             catch (Exception ex) { SetStatus("Mapping reset failed: " + ex.Message); }
@@ -757,6 +1062,7 @@ namespace ACCustoms
                     Directory.CreateDirectory(System.IO.Path.GetDirectoryName(MappingSettingsPath));
                     File.WriteAllText(MappingSettingsPath, selectedMappingJson);
                     RefreshTemplateStatus();
+                    RefreshMappingUpdateButton();
                     SetStatus("Custom mapping selected. Generate textures to update.");
                 }
             }
