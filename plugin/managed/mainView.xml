@@ -1,49 +1,38 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0" encoding="utf-8"?>
 <view icon="8712" title="AC Customs" width="430" height="326">
   <control progid="DecalControls.FixedLayout" clipped="">
     <control progid="DecalControls.Notebook" name="MainTabs" left="0" top="0" width="430" height="326">
-      <page label="My UI">
-        <control progid="DecalControls.FixedLayout" name="ThemePageLayout" clipped="">
-          <control progid="DecalControls.StaticText" name="BrandTitle" left="18" top="11" width="394" height="24" fontface="Arial" fontsize="16" fontstyle="bold" text="AC CUSTOMS" />
-          <control progid="DecalControls.StaticText" name="TemplateLabel" left="18" top="47" width="78" height="20" fontface="Arial" fontsize="11" fontstyle="bold" text="THEME" />
-          <control progid="DecalControls.StaticText" name="TemplatePngText" left="101" top="47" width="172" height="20" fontface="Arial" fontsize="11" text="Choose theme..." />
-          <control progid="DecalControls.PushButton" name="BrowseTemplate" left="282" top="40" width="130" height="29" fontface="Arial" fontsize="11" fontstyle="bold" text="Browse" />
-          <control progid="DecalControls.StaticText" name="TemplateStatusIcon" left="19" top="92" width="32" height="24" fontface="Arial" fontsize="12" fontstyle="bold" text="OK" />
-          <control progid="DecalControls.StaticText" name="TemplateStatusText" left="53" top="92" width="247" height="23" fontface="Arial" fontsize="12" fontstyle="bold" text="UP TO DATE" />
-          <control progid="DecalControls.PushButton" name="RefreshTemplate" left="303" top="86" width="109" height="29" fontface="Arial" fontsize="11" fontstyle="bold" text="Refresh" />
-          <control progid="DecalControls.PushButton" name="GenerateTemplate" left="18" top="132" width="242" height="37" fontface="Arial" fontsize="13" fontstyle="bold" text="GENERATE TEXTURES" />
-          <control progid="DecalControls.PushButton" name="ApplyGeneratedTemplate" left="268" top="132" width="144" height="37" fontface="Arial" fontsize="13" fontstyle="bold" text="APPLY UI" />
-          <control progid="DecalControls.PushButton" name="RestoreVanilla" left="18" top="178" width="394" height="29" fontface="Arial" fontsize="11" text="Restore Default UI" />
-          <control progid="DecalControls.StaticText" name="CurrentUiText" left="18" top="220" width="394" height="21" fontface="Arial" fontsize="12" text="Current Theme: AC Default" />
-          <control progid="DecalControls.StaticText" name="StatusText" left="18" top="245" width="394" height="29" fontface="Arial" fontsize="11" text="" />
-        </control>
-      </page>
-      <page label="Browse">
+      <page label="  Browse  ">
         <control progid="DecalControls.FixedLayout" name="ThemesPageLayout" clipped="">
-          <control progid="DecalControls.StaticText" name="ThemesHeader" left="18" top="12" width="394" height="25" fontface="Arial" fontsize="16" fontstyle="bold" text="THEME LIBRARY" />
-          <control progid="DecalControls.StaticText" name="ThemesIntro" left="18" top="40" width="394" height="20" fontface="Arial" fontsize="10" text="Official themes from the AC Customs GitHub folder." />
-          <control progid="DecalControls.List" name="ThemesList" left="18" top="66" width="394" height="145">
+          <control progid="DecalControls.StaticText" name="ThemesHeader" left="18" top="12" width="205" height="25" fontface="Arial" fontsize="16" fontstyle="bold" text="THEME LIBRARY" />
+          <control progid="DecalControls.PushButton" name="RestoreVanilla" left="246" top="10" width="166" height="28" fontface="Arial" fontsize="11" text="Restore Classic UI" />
+          <control progid="DecalControls.StaticText" name="ThemesIntro" left="1000" top="40" width="394" height="20" fontface="Arial" fontsize="10" text="" />
+          <control progid="DecalControls.List" name="ThemesList" left="18" top="49" width="394" height="163">
             <column progid="DecalControls.TextColumn" name="ThemeListName" fixedwidth="207" />
             <column progid="DecalControls.TextColumn" name="ThemeListState" fixedwidth="162" />
           </control>
           <control progid="DecalControls.StaticText" name="ThemesStatus" left="18" top="215" width="394" height="24" fontface="Arial" fontsize="11" text="Checking GitHub themes..." />
-          <control progid="DecalControls.PushButton" name="ThemesRefresh" left="18" top="248" width="114" height="31" fontface="Arial" fontsize="11" text="Refresh" />
-          <control progid="DecalControls.PushButton" name="ThemesInstall" left="141" top="248" width="132" height="31" fontface="Arial" fontsize="11" text="Install/Update" />
-          <control progid="DecalControls.PushButton" name="ThemesUse" left="282" top="248" width="130" height="31" fontface="Arial" fontsize="11" text="Apply Theme" />
+          <control progid="DecalControls.PushButton" name="ThemesRefresh" left="18" top="248" width="82" height="31" fontface="Arial" fontsize="11" text="Refresh" />
+          <control progid="DecalControls.PushButton" name="ThemesInstall" left="228" top="248" width="88" height="31" fontface="Arial" fontsize="11" text="Install/Update" />
+          <control progid="DecalControls.PushButton" name="ThemesUse" left="321" top="248" width="91" height="31" fontface="Arial" fontsize="11" text="Apply Theme" />
+          <control progid="DecalControls.PushButton" name="ThemesAddLocal" left="108" top="248" width="112" height="31" fontface="Arial" fontsize="11" text="Add Local" />
         </control>
       </page>
-      <page label="Share">
+      <page label="  Share  ">
         <control progid="DecalControls.FixedLayout" name="UploadPageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="UploadHeader" left="18" top="13" width="394" height="26" fontface="Arial" fontsize="16" fontstyle="bold" text="SHARE YOUR THEME" />
           <control progid="DecalControls.StaticText" name="UploadIntro" left="18" top="44" width="394" height="39" fontface="Arial" fontsize="11" text="Submit a 2000 x 2000 PNG for community review." />
           <control progid="DecalControls.StaticText" name="UploadFilename" left="18" top="97" width="257" height="23" fontface="Arial" fontsize="11" text="No PNG selected" />
           <control progid="DecalControls.PushButton" name="UploadBrowse" left="282" top="90" width="130" height="31" fontface="Arial" fontsize="11" text="Select PNG" />
           <control progid="DecalControls.StaticText" name="UploadGuidelines" left="18" top="137" width="394" height="42" fontface="Arial" fontsize="11" text="Share only artwork you have permission to publish. All submissions are reviewed before appearing in Themes." />
-          <control progid="DecalControls.StaticText" name="UploadStatus" left="18" top="202" width="394" height="39" fontface="Arial" fontsize="11" text="Choose a PNG to prepare your submission." />
-          <control progid="DecalControls.PushButton" name="UploadSubmit" left="18" top="249" width="394" height="32" fontface="Arial" fontsize="11" fontstyle="bold" text="Submit for Review" />
+          <control progid="DecalControls.StaticText" name="UploadStatus" left="18" top="183" width="394" height="24" fontface="Arial" fontsize="11" text="Choose a PNG to prepare your submission." />
+          <control progid="DecalControls.PushButton" name="UploadSubmit" left="18" top="215" width="394" height="31" fontface="Arial" fontsize="11" fontstyle="bold" text="Submit for Review" />
+          <control progid="DecalControls.StaticText" name="TemplateDownloadLabel" left="18" top="260" width="220" height="22" fontface="Arial" fontsize="12" text="Create your own UI..." />
+          <control progid="DecalControls.PushButton" name="TemplateDownload" left="252" top="256" width="160" height="29" fontface="Arial" fontsize="11" text="Download Template" />
+          <control progid="DecalControls.StaticText" name="TemplateDownloadStatus" left="18" top="287" width="394" height="18" fontface="Arial" fontsize="10" text="Official 2000 x 2000 PNG template." />
         </control>
       </page>
-      <page label="Advanced">
+      <page label="  Advanced  ">
         <control progid="DecalControls.FixedLayout" name="AdvancedPageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="AdvancedHeader" left="18" top="20" width="394" height="24" fontface="Arial" fontsize="16" fontstyle="bold" text="MAPPING SETTINGS" />
           <control progid="DecalControls.StaticText" name="AdvancedInfo" left="18" top="46" width="394" height="24" fontface="Arial" fontsize="11" text="Official mapping releases are managed by AC Customs." />
@@ -58,7 +47,7 @@
         </control>
       </page>
       <!-- AC_UPDATE_PAGE_BEGIN -->
-    <page label="Update">
+      <page label="  Update  ">
         <control progid="DecalControls.FixedLayout" name="UpdatePageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="UpdateHeader" left="18" top="16" width="394" height="27" fontface="Arial" fontsize="16" fontstyle="bold" text="MAPPING UPDATE" />
           <control progid="DecalControls.StaticText" name="UpdateInstalled" left="18" top="48" width="394" height="20" fontface="Arial" fontsize="11" text="Current mappings: Bundled" />
@@ -73,7 +62,7 @@
           </control>
         </control>
       </page>
-    <!-- AC_UPDATE_PAGE_END -->
+      <!-- AC_UPDATE_PAGE_END -->
     </control>
   </control>
 </view>

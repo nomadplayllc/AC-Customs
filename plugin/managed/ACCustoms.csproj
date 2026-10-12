@@ -65,10 +65,14 @@
     <Compile Include="MappingUpdateService.cs" />
     <Compile Include="ThemeLibraryService.cs" />
     <Compile Include="ThemeCache.cs" />
+    <Compile Include="TemplateDownloadService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="CheckMarkIcon.png"><LogicalName>ACCustoms.Icons.CheckMarkIcon.png</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="RedXIcon.png"><LogicalName>ACCustoms.Icons.RedXIcon.png</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="UpArrowIcon.png"><LogicalName>ACCustoms.Icons.UpArrowIcon.png</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="mainView.xml">
       <LogicalName>ACCustoms.mainView.xml</LogicalName>
     </EmbeddedResource>
