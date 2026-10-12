@@ -16,6 +16,20 @@ namespace ACCustoms
     public sealed class PluginCore : PluginBase
     {
         private static readonly TimeSpan ApplyCooldown = TimeSpan.FromSeconds(3);
+        // One palette for the MAIN window AND the MAPPING UPDATE window.
+        // Never duplicate ARGB literals across the two appearance methods.
+        private static readonly Color UiBackground = Color.FromArgb(255, 13, 20, 30);
+        private static readonly Color UiGold = Color.FromArgb(223, 174, 85);
+        private static readonly Color UiBlue = Color.FromArgb(100, 168, 222);
+        private static readonly Color UiMuted = Color.FromArgb(175, 192, 212);
+        private static readonly Color UiBodyText = Color.FromArgb(190, 207, 223);
+        private static readonly Color UiButtonText = Color.FromArgb(245, 247, 250);
+        private static readonly Color UiGreen = Color.FromArgb(82, 210, 133);
+        private static readonly Color UiGenerateButton = Color.FromArgb(145, 100, 37);
+        private static readonly Color UiPrimaryButton = Color.FromArgb(39, 89, 142);
+        private static readonly Color UiSecondaryButton = Color.FromArgb(29, 43, 58);
+        private static readonly Color UiAdvancedButton = Color.FromArgb(20, 32, 47);
+        private static readonly Color UiUpdateButton = Color.FromArgb(126, 87, 34);
         private const int CustomIconResourceId = 101;
 
         private DateTime lastChangeUtc = DateTime.MinValue;
@@ -23,13 +37,48 @@ namespace ACCustoms
         private HudView view;
         private HudButton ImportPack;
         private HudButton RestoreVanilla;
-        private HudButton AvailableUpdate;
-        private HudView updateView;
+        // Native VVS notebook: real tabs, no tab-shaped buttons or extra VVS icon.
+        // VVS creates one notebook in one HudView, just like other Decal plugins.
+        private bool viewHasUpdateTab;
+        private bool notebookRebuildRequested;
+        private bool rebuildingNotebook;
+        private Size lastNotebookClientArea = Size.Empty;
+        private DateTime nextNotebookLayoutPollUtc = DateTime.MinValue;
+        private readonly HashSet<string> notebookLayoutApplied = new HashSet<string>();
+        // Each Notebook page owns an independently painted FixedLayout.
+        // Setting the root layout's Image alone allows light VVS themes to
+        // paint gray over our navy surface (and make pale text unreadable).
+        private readonly HashSet<string> skinnedPageLayouts = new HashSet<string>();
+        private sealed class ButtonArtwork
+        {
+            internal HudButton Control;
+            internal string Caption;
+            internal Color Background;
+            internal int Width, Height, FontPixels;
+            internal bool Bold;
+        }
+        // VVS skins can ignore HudButton.TextColor. Keep the captions inside
+        // our OWN button bitmap so skin-specific black text cannot override it.
+        private readonly Dictionary<string, ButtonArtwork> buttonArtwork =
+            new Dictionary<string, ButtonArtwork>();
+        private readonly List<Bitmap> ownedButtonBitmaps = new List<Bitmap>();
+        private HudButton AdvancedUseDefault;
+        private HudStaticText AdvancedMappingLabel;
+        private HudStaticText AdvancedMappingFile;
+        private HudStaticText AdvancedMappingHint;
+        private HudList updateNotesList;
+        private HudButton AdvancedCheckUpdates;
+        private HudStaticText AdvancedHeader;
+        private HudStaticText AdvancedInfo;
+        private HudStaticText AdvancedMappingVersion;
+        private HudStaticText AdvancedFooter;
+        private HudStaticText UpdateHeader;
+        private HudStaticText UpdateNotesHeader;
+        private HudStaticText UpdateInstructions;
+        private string updateFeedback = String.Empty;
         private HudStaticText updateInstalledText;
         private HudStaticText updateAvailableText;
         private HudStaticText updateStatusText;
-        private HudStaticText[] updateNotes;
-        private HudButton updateCloseButton;
         private HudButton updateDownloadButton;
         private HudButton updateOpenFolderButton;
         private MappingRelease availableMappingRelease;
@@ -42,11 +91,25 @@ namespace ACCustoms
         private bool mappingCheckResultPending;
         private MappingRelease checkedMappingRelease;
         private string mappingCheckError;
+        private bool manualMappingCheckPending;
+        private static readonly object mappingUpdateLogLock = new object();
+        private static readonly string MappingUpdateLogPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ACCustoms", "mapping-update.log");
         private DateTime lastMappingCheckUtc = DateTime.MinValue;
+        // A brief network failure during AC/Decal startup should not leave a
+        // red error in the plugin or require opening Advanced to retry.
+        private DateTime nextAutomaticMappingRetryUtc = DateTime.MaxValue;
+        private int automaticMappingFailures;
         private bool mappingDownloadRunning;
         private bool mappingDownloadResultPending;
         private string mappingDownloadFolderResult;
         private string mappingDownloadError;
+        private MappingRelease mappingDownloadReleaseResult;
+        // Defer activation if a texture compile starts during the download.
+        // These two fields are only read/written on the Decal render thread.
+        private MappingRelease pendingMappingActivation;
+        private string pendingMappingFolder = String.Empty;
 
         private DateTime nextViewAttemptUtc;
         private bool viewFailed;
@@ -79,9 +142,9 @@ namespace ACCustoms
         private static readonly string MappingSettingsPath = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ACCustoms", "master-template-mapping.txt");
-        // The official mapping is EMBEDDED in ACCustoms.dll. On startup we
-        // extract it to app data so the compiler can read a normal JSON path.
-        // Shipping a new mapping requires only a plugin release, not user setup.
+        // Keep the embedded mapping as an offline fallback. Newer official
+        // mappings are downloaded under LocalAppData and their selected path is
+        // persisted to MappingSettingsPath; they do not require a new DLL.
         private const string BundledMappingResourceName = "ACCustoms.Assets.template_mapping.json";
         private static readonly string BundledMappingPath = System.IO.Path.Combine(
             PackManager.RuntimeDirectory, "DefaultMapping", "template_mapping.json");
@@ -99,7 +162,6 @@ namespace ACCustoms
         // Advanced temporarily reuses the theme picker and Refresh button to
         // configure an optional custom mapping without crowding the main UI.
         private HudButton AdvancedOptions;
-        private bool advancedMode;
         private HudButton RefreshTemplate;
         private HudButton GenerateTemplate;
         private HudButton ApplyGeneratedTemplate;
@@ -177,7 +239,6 @@ namespace ACCustoms
         {
             updateShuttingDown = true;
             try { Core.RenderFrame -= Core_RenderFrame; } catch { }
-            try { DisposeUpdateView(); } catch { }
             try { DisposeView(); } catch { }
             try { NativeBridge.Shutdown(); } catch { }
         }
@@ -274,6 +335,10 @@ namespace ACCustoms
         {
             status = text ?? String.Empty;
             UpdateStatusText();
+            // The Theme status line is hidden on Advanced. Display manual
+            // update-check feedback locally on the Advanced page instead.
+            if (AdvancedFooter != null)
+                AdvancedFooter.Text = Shorten(status.Replace("\r", " ").Replace("\n", " "), 58);
         }
 
         private void UpdateStatusText()
@@ -373,12 +438,34 @@ namespace ACCustoms
         {
             ViewProperties properties;
             ControlGroup controls;
+            string layoutXml;
             using (Stream stream = typeof(PluginCore).Assembly.GetManifestResourceStream("ACCustoms.mainView.xml"))
             using (StreamReader reader = new StreamReader(stream))
-                new VirindiViewService.XMLParsers.Decal3XMLParser().Parse(reader.ReadToEnd(), out properties, out controls);
+                layoutXml = reader.ReadToEnd();
+            viewHasUpdateTab = mappingUpdateVisible;
+            // Hide the entire native tab until there is a real update; parsing
+            // the same notebook layout prevents disabled/empty tab placeholders.
+            if (!viewHasUpdateTab)
+            {
+                const string begin = "<!-- AC_UPDATE_PAGE_BEGIN -->";
+                const string end = "<!-- AC_UPDATE_PAGE_END -->";
+                int first = layoutXml.IndexOf(begin, StringComparison.Ordinal);
+                int last = layoutXml.IndexOf(end, StringComparison.Ordinal);
+                if (first < 0 || last < first)
+                    throw new InvalidDataException("Update notebook template markers missing.");
+                layoutXml = layoutXml.Remove(first, last + end.Length - first);
+            }
+            new VirindiViewService.XMLParsers.Decal3XMLParser().Parse(layoutXml, out properties, out controls);
 
             view = new HudView(properties, controls, "ACCustoms.Main");
-            view.ClientArea = new Size(430, 326);
+            // XML sets the initial size. The VVS user's stored size is retained.
+            // Magellan3's VVS example confirms this property name and that
+            // FixedLayout children must be reflowed when the frame resizes.
+            EnableNativeWindowResize();
+            lastNotebookClientArea = Size.Empty;
+            notebookLayoutApplied.Clear();
+            skinnedPageLayouts.Clear();
+            buttonArtwork.Clear();
             CurrentUiText = (HudStaticText)view["CurrentUiText"];
             StatusText = (HudStaticText)view["StatusText"];
             StatusTextLine2 = null;
@@ -392,11 +479,31 @@ namespace ACCustoms
             TemplateStatusDetail = null;
             BrowseTemplate = (HudButton)view["BrowseTemplate"];
             AdvancedOptions = (HudButton)view["AdvancedOptions"];
+            AdvancedUseDefault = (HudButton)view["AdvancedUseDefault"];
+            AdvancedMappingLabel = (HudStaticText)view["AdvancedMappingLabel"];
+            AdvancedMappingFile = (HudStaticText)view["AdvancedMappingFile"];
+            AdvancedMappingHint = (HudStaticText)view["AdvancedMappingHint"];
             RefreshTemplate = (HudButton)view["RefreshTemplate"];
             GenerateTemplate = (HudButton)view["GenerateTemplate"];
             ApplyGeneratedTemplate = (HudButton)view["ApplyGeneratedTemplate"];
             RestoreVanilla = (HudButton)view["RestoreVanilla"];
-            AvailableUpdate = (HudButton)view["AvailableUpdate"];
+            AdvancedCheckUpdates = (HudButton)view["AdvancedCheckUpdates"];
+            AdvancedHeader = (HudStaticText)view["AdvancedHeader"];
+            AdvancedInfo = (HudStaticText)view["AdvancedInfo"];
+            AdvancedMappingVersion = (HudStaticText)view["AdvancedMappingVersion"];
+            AdvancedFooter = (HudStaticText)view["AdvancedFooter"];
+            if (viewHasUpdateTab)
+            {
+                UpdateHeader = (HudStaticText)view["UpdateHeader"];
+                UpdateNotesHeader = (HudStaticText)view["UpdateNotesHeader"];
+                UpdateInstructions = (HudStaticText)view["UpdateInstructions"];
+                updateInstalledText = (HudStaticText)view["UpdateInstalled"];
+                updateAvailableText = (HudStaticText)view["UpdateAvailable"];
+                updateStatusText = (HudStaticText)view["UpdateDownloadStatus"];
+                updateNotesList = (HudList)view["UpdateNotesList"];
+                updateOpenFolderButton = (HudButton)view["UpdateOpenFolder"];
+                updateDownloadButton = (HudButton)view["UpdateDownload"];
+            }
 
             // DEPRECATED ACUI UI: hidden in favor of the theme + mapping workflow.
             // ImportPack, ThemeChoice, ApplyTheme handlers and PackManager remain
@@ -407,13 +514,21 @@ namespace ACCustoms
 
             BrowseTemplate.MouseEvent += BrowseTemplate_MouseEvent;
             AdvancedOptions.MouseEvent += AdvancedOptions_MouseEvent;
+            AdvancedUseDefault.MouseEvent += AdvancedUseDefault_MouseEvent;
             RefreshTemplate.MouseEvent += RefreshTemplate_MouseEvent;
             GenerateTemplate.MouseEvent += GenerateTemplate_MouseEvent;
             ApplyGeneratedTemplate.MouseEvent += ApplyGeneratedTemplate_MouseEvent;
             RestoreVanilla.MouseEvent += RestoreVanilla_MouseEvent;
-            AvailableUpdate.MouseEvent += AvailableUpdate_MouseEvent;
+            AdvancedCheckUpdates.MouseEvent += AdvancedCheckUpdates_MouseEvent;
+            if (viewHasUpdateTab)
+            {
+                updateOpenFolderButton.MouseEvent += UpdateOpenFolder_MouseEvent;
+                updateDownloadButton.MouseEvent += UpdateDownload_MouseEvent;
+            }
             ApplyModernAppearance();
             RefreshMappingUpdateButton();
+            RefreshAdvancedMappingInfo();
+            if (viewHasUpdateTab) RefreshMappingUpdateWindow();
             TryApplyCustomViewIcon();
             RefreshInstalledPacks(null);
             RefreshTemplateStatus();
@@ -421,63 +536,196 @@ namespace ACCustoms
             SetStatus(nativeReady ? BuildReadyStatus() : "Native engine failed to initialize");
         }
 
-        private static void TrySetColor(object target, Color color)
+        private static bool TrySetColor(object target, Color color)
         {
-            if (target == null) return;
-            // VVS control implementations vary; avoid a hard dependency on
-            // presentation-only color properties not present in older builds.
-            foreach (string name in new[] { "TextColor", "ForeColor" })
+            if (target == null) return false;
+            // VVS themes may supply their own button caption color. Prefer an
+            // explicit foreground rather than leaving black text on dark blue.
+            // Use reflection to remain compatible with older VVS builds.
+            foreach (string name in new[] { "TextColor", "ForeColor", "FontColor" })
             {
                 var property = target.GetType().GetProperty(name);
-                if (property != null && property.CanWrite && property.PropertyType == typeof(Color))
+                if (property != null && property.CanWrite &&
+                    property.PropertyType == typeof(Color))
                 {
-                    try { property.SetValue(target, color, null); } catch { }
-                    return;
+                    try { property.SetValue(target, color, null); return true; }
+                    catch { /* Try the next supported property. */ }
                 }
             }
+            return false;
         }
 
         private void ApplyModernAppearance()
         {
-            // Opaque navy content background, compatible with the existing VVS
-            // FixedLayout. VVS still controls the outer titlebar/button skins.
-            try
-            {
-                object layout = view.Controls.HeadControl;
-                var imageProperty = layout.GetType().GetProperty("Image");
-                if (imageProperty != null && imageProperty.CanWrite)
-                    imageProperty.SetValue(layout,
-                        new ACImage(Color.FromArgb(255, 13, 20, 30)), null);
-            }
-            catch { /* VVS versions without layout images use their own theme. */ }
-            Color gold = Color.FromArgb(223, 174, 85);
-            Color blue = Color.FromArgb(100, 168, 222);
-            Color muted = Color.FromArgb(175, 192, 212);
-            TrySetColor(BrandTitle, gold);
-            TrySetColor(BrandSubtitle, blue);
-            TrySetColor(TemplateLabel, gold);
-            TrySetColor(CurrentUiText, muted);
-            TrySetColor(TemplatePngText, muted);
-            TrySetColor(StatusText, Color.FromArgb(190, 207, 223));
-            // VVS skins vary. Best effort only: some expose a writable Image
-            // for buttons; others ignore it and retain the user's VVS skin.
-            TrySetButtonSurface(GenerateTemplate, Color.FromArgb(145, 100, 37));
-            TrySetButtonSurface(ApplyGeneratedTemplate, Color.FromArgb(39, 89, 142));
-            TrySetButtonSurface(RestoreVanilla, Color.FromArgb(29, 43, 58));
-            TrySetButtonSurface(AdvancedOptions, Color.FromArgb(20, 32, 47));
-            TrySetButtonSurface(AvailableUpdate, Color.FromArgb(126, 87, 34));
+            ApplySharedWindowBackground();
+            TrySetColor(BrandTitle, UiGold);
+            TrySetColor(BrandSubtitle, UiBlue);
+            TrySetColor(TemplateLabel, UiGold);
+            TrySetColor(CurrentUiText, UiMuted);
+            TrySetColor(TemplatePngText, UiMuted);
+            TrySetColor(StatusText, UiBodyText);
+            foreach (object heading in new object[] { AdvancedHeader, AdvancedMappingLabel,
+                UpdateHeader, UpdateNotesHeader })
+                TrySetColor(heading, UiGold);
+            foreach (object info in new object[] { AdvancedInfo, AdvancedMappingVersion,
+                AdvancedFooter, AdvancedMappingFile, AdvancedMappingHint,
+                UpdateInstructions, updateInstalledText })
+                TrySetColor(info, UiMuted);
+            TrySetColor(updateAvailableText, UiBlue);
+            TrySetColor(updateStatusText, UiMuted);
+
+            // An ordinary VVS PushButton lets a skin paint its own caption,
+            // including black text over our blue fill. Use an ACImage(Bitmap)
+            // containing both our fill and caption; keep HudButton for clicks.
+            RegisterButtonArtwork("BrowseTemplate", BrowseTemplate, "Browse",
+                UiAdvancedButton, 130, 29, 14, true);
+            RegisterButtonArtwork("RefreshTemplate", RefreshTemplate, "Refresh",
+                UiAdvancedButton, 109, 29, 14, true);
+            RegisterButtonArtwork("GenerateTemplate", GenerateTemplate, "GENERATE TEXTURES",
+                UiGenerateButton, 242, 37, 16, true);
+            RegisterButtonArtwork("ApplyGeneratedTemplate", ApplyGeneratedTemplate, "APPLY UI",
+                UiPrimaryButton, 144, 37, 16, true);
+            RegisterButtonArtwork("RestoreVanilla", RestoreVanilla, "Restore Default UI",
+                UiSecondaryButton, 394, 29, 14, false);
+            RegisterButtonArtwork("AdvancedOptions", AdvancedOptions, "Change Mapping",
+                UiAdvancedButton, 138, 28, 14, false);
+            RegisterButtonArtwork("AdvancedUseDefault", AdvancedUseDefault, "Use Default",
+                UiAdvancedButton, 125, 28, 14, false);
+            RegisterButtonArtwork("AdvancedCheckUpdates", AdvancedCheckUpdates, "Check Updates",
+                UiSecondaryButton, 177, 32, 14, true);
+            RegisterButtonArtwork("UpdateOpenFolder", updateOpenFolderButton, "View Files",
+                UiSecondaryButton, 82, 29, 13, false);
+            RegisterButtonArtwork("UpdateDownload", updateDownloadButton, "Install Update",
+                UiPrimaryButton, 107, 29, 13, true);
         }
 
-        private static void TrySetButtonSurface(object button, Color background)
+        private static bool ApplyLayoutBackground(object layout)
         {
-            if (button == null) return;
+            if (layout == null) return false;
             try
             {
-                var prop = button.GetType().GetProperty("Image");
-                if (prop != null && prop.CanWrite && prop.PropertyType.IsAssignableFrom(typeof(ACImage)))
-                    prop.SetValue(button, new ACImage(background), null);
+                var image = layout.GetType().GetProperty("Image");
+                if (image == null || !image.CanWrite ||
+                    !image.PropertyType.IsAssignableFrom(typeof(ACImage))) return false;
+                image.SetValue(layout, new ACImage(UiBackground), null);
+                return true;
             }
-            catch { /* Older VVS themes may not expose button images. */ }
+            catch { return false; }
+        }
+
+        private void ApplySharedWindowBackground()
+        {
+            if (view == null) return;
+            // The outermost FixedLayout no longer paints the visible page now
+            // that a Notebook is in front of it. Style each PAGE layout, too.
+            if (!skinnedPageLayouts.Contains("__root") &&
+                ApplyLayoutBackground(view.Controls.HeadControl))
+                skinnedPageLayouts.Add("__root");
+            foreach (string name in new[] { "ThemePageLayout", "AdvancedPageLayout",
+                "UpdatePageLayout" })
+            {
+                if (skinnedPageLayouts.Contains(name)) continue;
+                try
+                {
+                    object page = view[name]; // unavailable until a lazy tab is realized
+                    if (ApplyLayoutBackground(page)) skinnedPageLayouts.Add(name);
+                }
+                catch { /* Try again when the tab is realized. */ }
+            }
+        }
+
+        private void RegisterButtonArtwork(string name, HudButton control,
+            string caption, Color background, int width, int height, int fontPixels, bool bold)
+        {
+            if (control == null) return;
+            var item = new ButtonArtwork
+            {
+                Control = control, Caption = caption, Background = background,
+                Width = width, Height = height, FontPixels = fontPixels, Bold = bold
+            };
+            buttonArtwork[name] = item;
+            PaintButtonArtwork(item);
+        }
+
+        private void PaintButtonArtwork(ButtonArtwork item)
+        {
+            if (item == null || item.Control == null) return;
+            try
+            {
+                // Full opaque bitmap avoids transparency compositing differences
+                // between installed VVS skins. Text is part of the image, so
+                // it cannot inherit black captions from a light theme.
+                var bitmap = new Bitmap(item.Width, item.Height,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(bitmap))
+                using (var fill = new SolidBrush(item.Background))
+                using (var captionBrush = new SolidBrush(UiButtonText))
+                using (var outline = new Pen(Color.FromArgb(125, 147, 166)))
+                {
+                    g.Clear(item.Background);
+                    g.FillRectangle(fill, 0, 0, item.Width, item.Height);
+                    g.DrawRectangle(outline, 0, 0, item.Width - 1, item.Height - 1);
+                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                    using (var format = new StringFormat())
+                    {
+                        format.Alignment = StringAlignment.Center;
+                        format.LineAlignment = StringAlignment.Center;
+                        format.FormatFlags = StringFormatFlags.NoWrap;
+                        float fontSize = item.FontPixels;
+                        Font font = null;
+                        try
+                        {
+                            while (true)
+                            {
+                                if (font != null) font.Dispose();
+                                font = new Font("Arial", fontSize,
+                                    item.Bold ? FontStyle.Bold : FontStyle.Regular,
+                                    GraphicsUnit.Pixel);
+                                if (g.MeasureString(item.Caption, font).Width <= item.Width - 9 ||
+                                    fontSize <= 8.0f) break;
+                                fontSize -= 0.5f;
+                            }
+                            g.DrawString(item.Caption, font, captionBrush,
+                                new RectangleF(2, 0, item.Width - 4, item.Height), format);
+                        }
+                        finally { if (font != null) font.Dispose(); }
+                    }
+                }
+                // ACAudio (open-source VVS plugin) uses this exact constructor
+                // on HudButton.Image. Do not release bitmap until view disposal.
+                item.Control.Image = new ACImage(bitmap,
+                    ACImage.eACImageDrawOptions.DrawStretch);
+                ownedButtonBitmaps.Add(bitmap);
+                item.Control.Text = String.Empty;
+            }
+            catch
+            {
+                // Fall back to a readable skin label if bitmaps are unsupported.
+                // Background may still be overridden on that particular VVS build.
+                item.Control.Text = item.Caption;
+                TrySetColor(item.Control, UiButtonText);
+            }
+        }
+
+        private void ChangeButtonArtworkText(string name, string text)
+        {
+            ButtonArtwork item;
+            if (buttonArtwork.TryGetValue(name, out item))
+            {
+                if (item.Caption == text) return;
+                item.Caption = text;
+                PaintButtonArtwork(item);
+            }
+        }
+
+        private void ResizeButtonArtwork(string name, int width, int height)
+        {
+            ButtonArtwork item;
+            if (!buttonArtwork.TryGetValue(name, out item) ||
+                (item.Width == width && item.Height == height)) return;
+            item.Width = width;
+            item.Height = height;
+            PaintButtonArtwork(item);
         }
 
         private void SetTemplateVisual(string icon, string title, string detail, Color color)
@@ -505,14 +753,22 @@ namespace ACCustoms
             if (ApplyTheme != null) ApplyTheme.MouseEvent -= ApplyTheme_MouseEvent;
             if (ImportPack != null) ImportPack.MouseEvent -= ImportPack_MouseEvent;
             if (RestoreVanilla != null) RestoreVanilla.MouseEvent -= RestoreVanilla_MouseEvent;
-            if (AvailableUpdate != null) AvailableUpdate.MouseEvent -= AvailableUpdate_MouseEvent;
+            if (AdvancedCheckUpdates != null) AdvancedCheckUpdates.MouseEvent -= AdvancedCheckUpdates_MouseEvent;
+            if (updateOpenFolderButton != null) updateOpenFolderButton.MouseEvent -= UpdateOpenFolder_MouseEvent;
+            if (updateDownloadButton != null) updateDownloadButton.MouseEvent -= UpdateDownload_MouseEvent;
             if (BrowseTemplate != null) BrowseTemplate.MouseEvent -= BrowseTemplate_MouseEvent;
             if (AdvancedOptions != null) AdvancedOptions.MouseEvent -= AdvancedOptions_MouseEvent;
+            if (AdvancedUseDefault != null) AdvancedUseDefault.MouseEvent -= AdvancedUseDefault_MouseEvent;
             if (RefreshTemplate != null) RefreshTemplate.MouseEvent -= RefreshTemplate_MouseEvent;
             if (GenerateTemplate != null) GenerateTemplate.MouseEvent -= GenerateTemplate_MouseEvent;
             if (ApplyGeneratedTemplate != null) ApplyGeneratedTemplate.MouseEvent -= ApplyGeneratedTemplate_MouseEvent;
             if (view != null) view.Dispose();
             view = null;
+            buttonArtwork.Clear();
+            skinnedPageLayouts.Clear();
+            foreach (Bitmap bitmap in ownedButtonBitmaps)
+                try { bitmap.Dispose(); } catch { }
+            ownedButtonBitmaps.Clear();
             CurrentUiText = null;
             StatusText = StatusTextLine2 = StatusTextLine3 = null;
             ThemeChoice = null;
@@ -521,7 +777,13 @@ namespace ACCustoms
             TemplateStatusText = TemplateStatusDetail = null;
             BrandTitle = BrandSubtitle = TemplateLabel = null;
             BrowseTemplate = RefreshTemplate = GenerateTemplate = ApplyGeneratedTemplate = AdvancedOptions = null;
-            AvailableUpdate = null;
+            AdvancedCheckUpdates = AdvancedUseDefault = null;
+            AdvancedMappingLabel = AdvancedMappingFile = AdvancedMappingHint = null;
+            AdvancedHeader = AdvancedInfo = AdvancedMappingVersion = AdvancedFooter = null;
+            UpdateHeader = UpdateNotesHeader = UpdateInstructions = null;
+            updateInstalledText = updateAvailableText = updateStatusText = null;
+            updateNotesList = null;
+            updateOpenFolderButton = updateDownloadButton = null;
         }
 
         private void Core_RenderFrame(object sender, EventArgs e)
@@ -530,6 +792,14 @@ namespace ACCustoms
             // completion exactly once here, on the normal Decal render thread.
             FinishTemplateBuildIfReady();
             FinishMappingUpdateWorkers();
+            if (notebookRebuildRequested && view != null)
+                RebuildMainNotebook();
+            ApplyNotebookResize();
+            if (!updateShuttingDown && DateTime.UtcNow >= nextAutomaticMappingRetryUtc)
+            {
+                nextAutomaticMappingRetryUtc = DateTime.MaxValue;
+                BeginMappingUpdateCheck();
+            }
             PollTemplateFileChanges();
             if (view != null || viewFailed || DateTime.UtcNow < nextViewAttemptUtc)
                 return;
@@ -569,22 +839,53 @@ namespace ACCustoms
             catch { /* Different VVS skins expose different presentation controls. */ }
         }
 
-        private void BeginMappingUpdateCheck()
+        private static void AppendMappingUpdateLog(string message)
+        {
+            try
+            {
+                lock (mappingUpdateLogLock)
+                {
+                    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(MappingUpdateLogPath));
+                    File.AppendAllText(MappingUpdateLogPath,
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + Environment.NewLine);
+                }
+            }
+            catch { /* Logging must never interfere with gameplay or update checks. */ }
+        }
+
+        private void BeginMappingUpdateCheck(bool manual = false)
         {
             if (updateShuttingDown) return;
             lock (mappingUpdateWorkerLock)
             {
-                if (mappingCheckRunning ||
-                    DateTime.UtcNow - lastMappingCheckUtc < TimeSpan.FromSeconds(10)) return;
+                if (mappingCheckRunning)
+                {
+                    if (manual) SetStatus("Mapping update check is already running...");
+                    return;
+                }
+                if (!manual && DateTime.UtcNow - lastMappingCheckUtc < TimeSpan.FromSeconds(10))
+                    return;
                 mappingCheckRunning = true;
+                manualMappingCheckPending = manual;
                 lastMappingCheckUtc = DateTime.UtcNow;
             }
+            AppendMappingUpdateLog("Checking GitHub mappings/latest.json (" +
+                (manual ? "manual" : "automatic") + ")");
+            if (manual) SetStatus("Checking GitHub for mapping updates...");
             ThreadPool.QueueUserWorkItem(delegate(object unused)
             {
                 MappingRelease remote = null;
                 string error = null;
-                try { remote = MappingUpdateService.GetLatest(); }
-                catch (Exception ex) { error = ex.Message; }
+                try
+                {
+                    remote = MappingUpdateService.GetLatest();
+                    AppendMappingUpdateLog("Manifest OK, mapping version " + remote.MappingVersion);
+                }
+                catch (Exception ex)
+                {
+                    error = ex.Message;
+                    AppendMappingUpdateLog("Manifest check FAILED: " + ex);
+                }
                 lock (mappingUpdateWorkerLock)
                 {
                     if (updateShuttingDown) return;
@@ -602,7 +903,8 @@ namespace ACCustoms
             string checkError = null;
             string folder = null;
             string downloadError = null;
-            bool checkedNow = false, downloadedNow = false;
+            MappingRelease completedDownloadRelease = null;
+            bool checkedNow = false, downloadedNow = false, manualCheck = false;
             lock (mappingUpdateWorkerLock)
             {
                 if (mappingCheckResultPending)
@@ -610,6 +912,8 @@ namespace ACCustoms
                     checkedNow = true;
                     remote = checkedMappingRelease;
                     checkError = mappingCheckError;
+                    manualCheck = manualMappingCheckPending;
+                    manualMappingCheckPending = false;
                     mappingCheckResultPending = false;
                 }
                 if (mappingDownloadResultPending)
@@ -617,6 +921,8 @@ namespace ACCustoms
                     downloadedNow = true;
                     folder = mappingDownloadFolderResult;
                     downloadError = mappingDownloadError;
+                    completedDownloadRelease = mappingDownloadReleaseResult;
+                    mappingDownloadReleaseResult = null;
                     mappingDownloadResultPending = false;
                 }
             }
@@ -625,147 +931,405 @@ namespace ACCustoms
                 // Network failures never prevent the plugin from operating.
                 if (remote != null)
                 {
+                    automaticMappingFailures = 0;
+                    nextAutomaticMappingRetryUtc = DateTime.MaxValue;
+                    if (availableMappingRelease == null ||
+                        !String.Equals(availableMappingRelease.MappingVersion, remote.MappingVersion,
+                            StringComparison.Ordinal))
+                    {
+                        updateFeedback = String.Empty;
+                    }
                     availableMappingRelease = remote;
                     downloadedReleaseFolder = MappingUpdateService.FindVerifiedDownload(remote);
                     RefreshMappingUpdateButton();
+                    AppendMappingUpdateLog("Installed mapping " + currentMappingReleaseName +
+                        "; latest v" + remote.MappingVersion +
+                        "; updateAvailable=" + mappingUpdateVisible.ToString());
+                    if (manualCheck)
+                        SetStatus(mappingUpdateVisible
+                            ? "Update v" + remote.MappingVersion + " available. Click Available Update."
+                            : "Mappings are current (v" + remote.MappingVersion + ").");
+                    else if (mappingUpdateVisible)
+                        SetStatus("Mapping update v" + remote.MappingVersion + " available.");
                 }
                 else
                 {
-                    availableMappingRelease = null;
-                    mappingUpdateVisible = false;
-                    RefreshMappingUpdateButton();
-                    // A missing or unreachable GitHub manifest is nonfatal.
-                    // Keep the regular plugin status unchanged.
+                    // Do NOT discard an earlier successful manifest on a
+                    // transient failure. Automatic startup checks are quiet;
+                    // manual checks still surface detailed errors for testing.
+                    if (availableMappingRelease == null)
+                    {
+                        mappingUpdateVisible = false;
+                        RefreshMappingUpdateButton();
+                    }
+                    string message = "Mapping update check failed: " +
+                        (String.IsNullOrWhiteSpace(checkError) ? "Unknown error" : checkError);
+                    ++automaticMappingFailures;
+                    int retrySeconds = Math.Min(300, 15 * (1 << Math.Min(automaticMappingFailures, 5)));
+                    nextAutomaticMappingRetryUtc = DateTime.UtcNow.AddSeconds(retrySeconds);
+                    AppendMappingUpdateLog(message + " (retry in " + retrySeconds + "s)");
+                    if (manualCheck)
+                    {
+                        SetStatus(Shorten(message, 150));
+                        try { Host.Actions.AddChatText("AC Customs: " + Shorten(message, 140), 3); }
+                        catch { }
+                    }
                 }
-                if (updateView != null) RefreshMappingUpdateWindow();
+                if (view != null && availableMappingRelease != null) RefreshMappingUpdateWindow();
             }
             if (downloadedNow)
             {
-                if (downloadError == null)
+                if (downloadError == null && completedDownloadRelease != null &&
+                    !String.IsNullOrWhiteSpace(folder))
                 {
                     downloadedReleaseFolder = folder;
-                    if (updateStatusText != null)
-                        updateStatusText.Text = "Downloaded and verified. Open Folder to install.";
+                    pendingMappingActivation = completedDownloadRelease;
+                    pendingMappingFolder = folder;
+                    AppendMappingUpdateLog("Verified v" + completedDownloadRelease.MappingVersion +
+                        " at " + folder + "; preparing activation.");
                 }
-                else if (updateStatusText != null)
-                    updateStatusText.Text = Shorten("Download failed: " + downloadError, 69);
-                if (updateDownloadButton != null)
-                    updateDownloadButton.Text = downloadError == null ? "Download Again" : "Retry Download";
-                RefreshMappingUpdateButton();
-                if (updateView != null && downloadError == null)
-                    RefreshMappingUpdateWindow();
+                else
+                {
+                    string message = "Mapping download failed: " +
+                        (String.IsNullOrWhiteSpace(downloadError) ? "Unknown error" : downloadError);
+                    AppendMappingUpdateLog(message);
+                    SetStatus(Shorten(message, 145));
+                    updateFeedback = Shorten(message, 95);
+                    if (updateStatusText != null)
+                        updateStatusText.Text = Shorten(updateFeedback, 33);
+                    if (updateDownloadButton != null)
+                    {
+                        ChangeButtonArtworkText("UpdateDownload", "Retry Download");
+                        TrySetVvsVisibility(updateDownloadButton, true);
+                    }
+                }
+            }
+
+            if (pendingMappingActivation != null)
+            {
+                if (IsTemplateBuildRunning())
+                {
+                    updateFeedback = "Downloaded. Waiting for generation.";
+                    if (updateStatusText != null)
+                        updateStatusText.Text = updateFeedback;
+                }
+                else
+                {
+                    MappingRelease release = pendingMappingActivation;
+                    string releaseFolder = pendingMappingFolder;
+                    pendingMappingActivation = null;
+                    pendingMappingFolder = String.Empty;
+                    try
+                    {
+                        ActivateDownloadedMapping(release, releaseFolder);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendMappingUpdateLog("Mapping activation FAILED: " + ex);
+                        SetStatus("Mapping activation failed: " + Shorten(ex.Message, 106));
+                        updateFeedback = "Install failed: " + ex.Message;
+                        if (updateStatusText != null)
+                            updateStatusText.Text = Shorten(updateFeedback, 35);
+                        ChangeButtonArtworkText("UpdateDownload", "Retry Install");
+                    }
+                }
+            }
+        }
+
+        // Called only on the Decal/VVS thread, after a verified download.
+        // Switching mappings does not regenerate textures or hot-swap the UI:
+        // those are deliberate user actions and may require Restore Default.
+        private void ActivateDownloadedMapping(MappingRelease release, string folder)
+        {
+            if (release == null || String.IsNullOrWhiteSpace(folder))
+                throw new InvalidDataException("No verified mapping release is selected.");
+            string relative = release.Files["mapping"];
+            string newMapping = System.IO.Path.GetFullPath(
+                System.IO.Path.Combine(folder, System.IO.Path.GetFileName(relative)));
+            if (!File.Exists(newMapping) ||
+                !String.Equals(MappingUpdateService.FileHash(newMapping),
+                    release.Sha256["mapping"], StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The downloaded mapping is missing or its checksum changed.");
+
+            TemplateTextureCompiler.ValidateMappingFile(newMapping);
+            string settingsFolder = System.IO.Path.GetDirectoryName(MappingSettingsPath);
+            Directory.CreateDirectory(settingsFolder);
+            string staged = MappingSettingsPath + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.WriteAllText(staged, newMapping);
+                if (File.Exists(MappingSettingsPath))
+                    File.Replace(staged, MappingSettingsPath, MappingSettingsPath + ".bak");
+                else
+                    File.Move(staged, MappingSettingsPath);
+            }
+            finally
+            {
+                if (File.Exists(staged)) File.Delete(staged);
+            }
+
+            selectedMappingJson = newMapping;
+            downloadedReleaseFolder = folder;
+            RefreshMappingUpdateButton();
+            RefreshTemplateStatus();
+            if (view != null) RefreshMappingUpdateWindow();
+            ChangeButtonArtworkText("UpdateDownload", "Installed");
+            AppendMappingUpdateLog("Activated official mapping v" + release.MappingVersion +
+                "; selected mapping=" + newMapping);
+            SetStatus("Mapping v" + release.MappingVersion +
+                " installed. Generate Textures, then Apply UI.");
+            updateFeedback = "Installed! Generate and Apply.";
+            if (updateStatusText != null)
+                updateStatusText.Text = updateFeedback;
+        }
+
+        private void EnableNativeWindowResize()
+        {
+            try
+            {
+                var prop = view.GetType().GetProperty("UserResizeable");
+                if (prop != null && prop.CanWrite && prop.PropertyType == typeof(bool))
+                    prop.SetValue(view, true, null);
+            }
+            catch { /* A VVS skin/version without resize support still loads. */ }
+        }
+
+        // HudFixedLayout stores the coordinates of its immediate children.
+        // Use the same API as the MIT-licensed VVS wrappers: Group.ParentOf +
+        // HudFixedLayout.SetControlRect. Tabs can be lazily realized, so failed
+        // lookups are retried at the next layout tick.
+        private bool TryNotebookControlRect(string name, int x, int y, int w, int h)
+        {
+            if (notebookLayoutApplied.Contains(name)) return true;
+            try
+            {
+                HudControl control = view[name];
+                if (control == null || control.Group == null) return false;
+                HudFixedLayout parent = control.Group.ParentOf(control.Name) as HudFixedLayout;
+                if (parent == null) return false;
+                parent.SetControlRect(control, new Rectangle(x, y, Math.Max(1, w), Math.Max(1, h)));
+                notebookLayoutApplied.Add(name);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // Resize the native notebook and useful content areas at ~5 Hz.
+        // This is intentionally based on the live VVS client rectangle;
+        // VVS persists the user's chosen size separately in vvs.s3db.
+        private void ApplyNotebookResize()
+        {
+            if (view == null || DateTime.UtcNow < nextNotebookLayoutPollUtc) return;
+            nextNotebookLayoutPollUtc = DateTime.UtcNow.AddMilliseconds(200);
+            Size size;
+            try { size = view.ClientArea; }
+            catch { return; }
+            // Do not allow the user to shrink controls into overlapping rows.
+            // Expanding remains unrestricted; VVS saves the chosen size.
+            if (size.Width < 430 || size.Height < 326)
+            {
+                try { view.ClientArea = new Size(Math.Max(430, size.Width), Math.Max(326, size.Height)); }
+                catch { }
+                return;
+            }
+            if (size != lastNotebookClientArea)
+            {
+                lastNotebookClientArea = size;
+                notebookLayoutApplied.Clear();
+            }
+            ApplySharedWindowBackground();
+            int dx = size.Width - 430;
+            int dy = size.Height - 326;
+            int split = dx * 2 / 3;
+            TryNotebookControlRect("MainTabs", 0, 0, size.Width, size.Height);
+
+            // Theme tab: preserve the two primary actions' gap and proportions.
+            TryNotebookControlRect("BrandTitle", 18, 11, 394 + dx, 24);
+            TryNotebookControlRect("TemplatePngText", 101, 47, 172 + dx, 20);
+            TryNotebookControlRect("BrowseTemplate", 282 + dx, 40, 130, 29);
+            TryNotebookControlRect("TemplateStatusText", 53, 92, 247 + dx, 23);
+            TryNotebookControlRect("RefreshTemplate", 303 + dx, 86, 109, 29);
+            TryNotebookControlRect("GenerateTemplate", 18, 132, 242 + split, 37);
+            TryNotebookControlRect("ApplyGeneratedTemplate", 268 + split, 132, 144 + dx - split, 37);
+            TryNotebookControlRect("RestoreVanilla", 18, 178, 394 + dx, 29);
+            ResizeButtonArtwork("GenerateTemplate", 242 + split, 37);
+            ResizeButtonArtwork("ApplyGeneratedTemplate", 144 + dx - split, 37);
+            ResizeButtonArtwork("RestoreVanilla", 394 + dx, 29);
+            TryNotebookControlRect("CurrentUiText", 18, 220 + dy, 394 + dx, 21);
+            TryNotebookControlRect("StatusText", 18, 245 + dy, 394 + dx, 29);
+
+            // Advanced: mapping actions stay aligned with the right margin.
+            TryNotebookControlRect("AdvancedHeader", 18, 20, 394 + dx, 24);
+            TryNotebookControlRect("AdvancedInfo", 18, 46, 394 + dx, 24);
+            TryNotebookControlRect("AdvancedMappingFile", 105, 84, 163 + dx, 20);
+            TryNotebookControlRect("AdvancedOptions", 274 + dx, 77, 138, 28);
+            TryNotebookControlRect("AdvancedUseDefault", 287 + dx, 120, 125, 28);
+            TryNotebookControlRect("AdvancedCheckUpdates", 18, 173, 177, 32);
+            TryNotebookControlRect("AdvancedMappingVersion", 18, 219 + dy, 394 + dx, 22);
+            TryNotebookControlRect("AdvancedFooter", 18, 246 + dy, 394 + dx, 30);
+
+            // Update: available height goes to the scrollable patch-notes list.
+            if (viewHasUpdateTab)
+            {
+                TryNotebookControlRect("UpdateHeader", 18, 16, 394 + dx, 27);
+                TryNotebookControlRect("UpdateInstalled", 18, 48, 394 + dx, 20);
+                TryNotebookControlRect("UpdateAvailable", 18, 70, 394 + dx, 20);
+                TryNotebookControlRect("UpdateNotesHeader", 18, 95, 393 + dx, 20);
+                int noteW = Math.Max(150, 394 + dx);
+                if (TryNotebookControlRect("UpdateNotesList", 18, 118, noteW, Math.Max(60, 112 + dy)) &&
+                    updateNotesList != null)
+                {
+                    // VVS fixes list column widths at parse time; resize it too.
+                    var set = updateNotesList.GetType().GetMethod("SetColumnWidth",
+                        new[] { typeof(int), typeof(int) });
+                    if (set != null) try { set.Invoke(updateNotesList,
+                        new object[] { 0, Math.Max(100, noteW - 22) }); } catch { }
+                }
+                TryNotebookControlRect("UpdateInstructions", 18, 238 + dy, 394 + dx, 19);
+                TryNotebookControlRect("UpdateDownloadStatus", 18, 259 + dy, 190 + dx, 28);
+                TryNotebookControlRect("UpdateOpenFolder", 218 + dx, 262 + dy, 82, 29);
+                TryNotebookControlRect("UpdateDownload", 305 + dx, 262 + dy, 107, 29);
             }
         }
 
         private void RefreshMappingUpdateButton()
         {
             MappingRelease release = availableMappingRelease;
-            mappingUpdateVisible = false;
-            if (release != null)
-            {
-                currentMappingReleaseName = MappingUpdateService.InstalledVersion(
-                    selectedMappingJson, BundledMappingPath, release);
-                mappingUpdateVisible = MappingUpdateService.IsNewer(
-                    release.MappingVersion, currentMappingReleaseName);
-            }
-            if (AvailableUpdate != null)
-            {
-                AvailableUpdate.Text = mappingUpdateVisible ? "Available Update" : String.Empty;
-                TrySetVvsVisibility(AvailableUpdate, mappingUpdateVisible);
-            }
+            mappingUpdateVisible = release != null &&
+                MappingUpdateService.IsNewer(release.MappingVersion,
+                    MappingUpdateService.InstalledVersion(selectedMappingJson, BundledMappingPath, release));
+            currentMappingReleaseName = release != null
+                ? MappingUpdateService.InstalledVersion(selectedMappingJson, BundledMappingPath, release)
+                : "Bundled";
+            RefreshAdvancedMappingInfo();
+            // A notebook page itself can't be hidden like a PushButton.
+            // Reparse only when the update state changes, reusing the SAME
+            // HudView identifier so VVS never gets a second bar icon.
+            if (view != null && viewHasUpdateTab != mappingUpdateVisible && !rebuildingNotebook)
+                notebookRebuildRequested = true;
         }
 
-        private void AvailableUpdate_MouseEvent(object sender, ControlMouseEventArgs e)
+        private void RefreshAdvancedMappingInfo()
         {
-            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
-                !mappingUpdateVisible || availableMappingRelease == null) return;
-            try { ShowMappingUpdateWindow(); }
-            catch (Exception ex) { SetStatus("Update window failed: " + ex.Message); }
+            if (AdvancedMappingFile != null)
+                AdvancedMappingFile.Text = UsesBundledMapping() ? "Included mappings"
+                    : Shorten(System.IO.Path.GetFileName(selectedMappingJson), 25);
+            if (AdvancedMappingVersion != null)
+                AdvancedMappingVersion.Text = "Installed mappings: " + currentMappingReleaseName;
         }
 
-        private void ShowMappingUpdateWindow()
+        private void RebuildMainNotebook()
         {
-            // One independent VVS view; no changes to the main plugin window.
-            DisposeUpdateView();
-            ViewProperties properties;
-            ControlGroup controls;
-            using (Stream stream = typeof(PluginCore).Assembly.GetManifestResourceStream(
-                "ACCustoms.updateView.xml"))
-            using (var reader = new StreamReader(stream))
-                new VirindiViewService.XMLParsers.Decal3XMLParser().Parse(
-                    reader.ReadToEnd(), out properties, out controls);
-            updateView = new HudView(properties, controls, "ACCustoms.MappingUpdate");
-            updateView.ClientArea = new Size(480, 446);
-            updateInstalledText = (HudStaticText)updateView["UpdateInstalled"];
-            updateAvailableText = (HudStaticText)updateView["UpdateAvailable"];
-            updateStatusText = (HudStaticText)updateView["UpdateDownloadStatus"];
-            updateNotes = new HudStaticText[5];
-            for (int i = 0; i < updateNotes.Length; ++i)
-                updateNotes[i] = (HudStaticText)updateView["UpdateNote" + (i + 1).ToString()];
-            updateCloseButton = (HudButton)updateView["UpdateClose"];
-            updateOpenFolderButton = (HudButton)updateView["UpdateOpenFolder"];
-            updateDownloadButton = (HudButton)updateView["UpdateDownload"];
-            updateCloseButton.MouseEvent += UpdateClose_MouseEvent;
-            updateOpenFolderButton.MouseEvent += UpdateOpenFolder_MouseEvent;
-            updateDownloadButton.MouseEvent += UpdateDownload_MouseEvent;
-            RefreshMappingUpdateWindow();
+            notebookRebuildRequested = false;
+            if (view == null || rebuildingNotebook) return;
+            rebuildingNotebook = true;
+            string previousStatus = status;
+            Point oldLocation = Point.Empty;
+            Size oldClientArea = Size.Empty;
+            bool hasLocation = false;
+            bool hasSize = false;
+            try
+            {
+                oldLocation = view.Location;
+                hasLocation = true;
+                oldClientArea = view.ClientArea;
+                hasSize = oldClientArea.Width > 0 && oldClientArea.Height > 0;
+            }
+            catch { /* Some VVS installations persist window geometry automatically. */ }
+            try
+            {
+                DisposeView();
+                CreateView();
+                if (view != null)
+                {
+                    if (hasLocation) view.Location = oldLocation;
+                    if (hasSize) view.ClientArea = oldClientArea;
+                }
+                SetStatus(previousStatus);
+            }
+            catch (Exception ex)
+            {
+                AppendMappingUpdateLog("Native notebook rebuild failed: " + ex);
+                try { Host.Actions.AddChatText("AC Customs: tabs failed: " + ex.Message, 3); } catch { }
+                try { DisposeView(); } catch { }
+                // Allow the normal VVS initialization path to retry cleanly.
+                nextViewAttemptUtc = DateTime.UtcNow.AddSeconds(2);
+            }
+            finally { rebuildingNotebook = false; }
+        }
+
+        private void AdvancedCheckUpdates_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
+                BeginMappingUpdateCheck(true);
+        }
+
+        // The native VVS List renders the full changelog with a scrollbar.
+        // VVS examples use HudList.AddRow() + HudStaticText for text columns.
+        private List<string> GetUpdateNoteLines()
+        {
+            var lines = new List<string>();
+            if (availableMappingRelease == null || availableMappingRelease.Changelog == null)
+                return lines;
+            foreach (string note in availableMappingRelease.Changelog)
+            {
+                string remaining = (note ?? String.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+                bool first = true;
+                do
+                {
+                    int take = Math.Min(54, remaining.Length);
+                    if (take < remaining.Length)
+                    {
+                        int space = remaining.LastIndexOf(' ', take, take);
+                        if (space >= 12) take = space;
+                    }
+                    string chunk = remaining.Substring(0, take).Trim();
+                    lines.Add((first ? "- " : "  ") + chunk);
+                    remaining = remaining.Substring(take).TrimStart();
+                    first = false;
+                } while (remaining.Length != 0);
+            }
+            return lines;
         }
 
         private void RefreshMappingUpdateWindow()
         {
-            if (updateView == null || availableMappingRelease == null) return;
+            if (view == null || !viewHasUpdateTab || availableMappingRelease == null || updateNotesList == null)
+                return;
             currentMappingReleaseName = MappingUpdateService.InstalledVersion(
                 selectedMappingJson, BundledMappingPath, availableMappingRelease);
             updateInstalledText.Text = "Current mappings: " + currentMappingReleaseName;
-            updateAvailableText.Text = "Available: v" + availableMappingRelease.MappingVersion;
-            List<string> notes = availableMappingRelease.Changelog ?? new List<string>();
-            for (int i = 0; i < updateNotes.Length; ++i)
+            updateAvailableText.Text = "Official release: v" + availableMappingRelease.MappingVersion;
+            while (updateNotesList.RowCount > 0)
+                updateNotesList.RemoveRow(updateNotesList.RowCount - 1);
+            foreach (string line in GetUpdateNoteLines())
             {
-                if (i >= notes.Count) updateNotes[i].Text = String.Empty;
-                else if (i == updateNotes.Length - 1 && notes.Count > updateNotes.Length)
-                    updateNotes[i].Text = "... and " + (notes.Count - i).ToString() + " more changes";
-                else updateNotes[i].Text = "- " + Shorten(notes[i] ?? "", 64);
+                HudList.HudListRowAccessor row = updateNotesList.AddRow();
+                HudStaticText caption = (HudStaticText)row[0];
+                caption.Text = line;
+                TrySetColor(caption, UiBodyText);
             }
             bool supported = MappingUpdateService.PluginSupported(availableMappingRelease);
-            if (!supported)
-            {
-                updateStatusText.Text = "Requires AC Customs plugin v" +
-                    availableMappingRelease.MinimumPluginVersion + " or newer.";
-                TrySetVvsVisibility(updateDownloadButton, false);
-            }
-            else
-            {
-                TrySetVvsVisibility(updateDownloadButton, true);
-                lock (mappingUpdateWorkerLock)
-                {
-                    updateStatusText.Text = mappingDownloadRunning
-                        ? "Downloading and verifying release files..."
-                        : (!String.IsNullOrEmpty(downloadedReleaseFolder)
-                            ? "Downloaded. Open Folder, then follow the steps above."
-                            : "Your custom PNGs are not modified.");
-                }
-            }
+            bool downloading;
+            lock (mappingUpdateWorkerLock) downloading = mappingDownloadRunning;
+            bool installed = !MappingUpdateService.IsNewer(
+                availableMappingRelease.MappingVersion, currentMappingReleaseName);
+            UpdateHeader.Text = installed ? "MAPPING INSTALLED" : "MAPPING UPDATE AVAILABLE";
+            TrySetColor(UpdateHeader, installed ? UiGreen : UiGold);
+            ChangeButtonArtworkText("UpdateDownload", !supported ? "Plugin Too Old" :
+                installed ? "Installed" : downloading ? "Downloading..." : "Install Update");
+            if (String.IsNullOrWhiteSpace(updateFeedback))
+                updateStatusText.Text = !supported ? "Requires plugin v" +
+                    availableMappingRelease.MinimumPluginVersion :
+                    installed ? "Installed. Generate and Apply." :
+                    downloading ? "Downloading and verifying..." :
+                    "Generate and Apply after install.";
+            else updateStatusText.Text = Shorten(updateFeedback, 36);
+            TrySetColor(updateStatusText, installed ? UiGreen : UiMuted);
             TrySetVvsVisibility(updateOpenFolderButton,
                 !String.IsNullOrEmpty(downloadedReleaseFolder) &&
-                System.IO.Directory.Exists(downloadedReleaseFolder));
-        }
-
-        private void DisposeUpdateView()
-        {
-            if (updateCloseButton != null) updateCloseButton.MouseEvent -= UpdateClose_MouseEvent;
-            if (updateOpenFolderButton != null) updateOpenFolderButton.MouseEvent -= UpdateOpenFolder_MouseEvent;
-            if (updateDownloadButton != null) updateDownloadButton.MouseEvent -= UpdateDownload_MouseEvent;
-            if (updateView != null) updateView.Dispose();
-            updateView = null;
-            updateInstalledText = updateAvailableText = updateStatusText = null;
-            updateCloseButton = updateOpenFolderButton = updateDownloadButton = null;
-            updateNotes = null;
-        }
-
-        private void UpdateClose_MouseEvent(object sender, ControlMouseEventArgs e)
-        {
-            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
-                DisposeUpdateView();
+                Directory.Exists(downloadedReleaseFolder));
+            TrySetVvsVisibility(updateDownloadButton, supported && !installed && !downloading);
         }
 
         private void UpdateOpenFolder_MouseEvent(object sender, ControlMouseEventArgs e)
@@ -779,8 +1343,9 @@ namespace ACCustoms
             }
             catch (Exception ex)
             {
+                updateFeedback = "Could not open folder: " + ex.Message;
                 if (updateStatusText != null)
-                    updateStatusText.Text = Shorten("Could not open folder: " + ex.Message, 69);
+                    updateStatusText.Text = Shorten(updateFeedback, 36);
             }
         }
 
@@ -789,15 +1354,25 @@ namespace ACCustoms
             if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
                 availableMappingRelease == null ||
                 !MappingUpdateService.PluginSupported(availableMappingRelease)) return;
+            if (IsTemplateBuildRunning())
+            {
+                updateFeedback = "Wait for texture generation.";
+                updateStatusText.Text = updateFeedback;
+                return;
+            }
+            if (!MappingUpdateService.IsNewer(availableMappingRelease.MappingVersion,
+                MappingUpdateService.InstalledVersion(selectedMappingJson, BundledMappingPath,
+                    availableMappingRelease))) return;
             MappingRelease release = availableMappingRelease;
             lock (mappingUpdateWorkerLock)
             {
                 if (mappingDownloadRunning) return;
                 mappingDownloadRunning = true;
             }
-            if (updateStatusText != null)
-                updateStatusText.Text = "Downloading and verifying release files...";
-            if (updateDownloadButton != null) updateDownloadButton.Text = "Downloading...";
+            updateFeedback = String.Empty;
+            updateStatusText.Text = "Downloading and verifying...";
+            ChangeButtonArtworkText("UpdateDownload", "Downloading...");
+            TrySetVvsVisibility(updateDownloadButton, false);
             ThreadPool.QueueUserWorkItem(delegate(object unused)
             {
                 string folder = null, error = null;
@@ -808,6 +1383,7 @@ namespace ACCustoms
                     if (updateShuttingDown) return;
                     mappingDownloadFolderResult = folder;
                     mappingDownloadError = error;
+                    mappingDownloadReleaseResult = release;
                     mappingDownloadResultPending = true;
                     mappingDownloadRunning = false;
                 }
@@ -836,27 +1412,27 @@ namespace ACCustoms
         {
             if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
             {
-                if (advancedMode) BrowseMapping_Click();
-                else BrowseTemplate_Click();
+                BrowseTemplate_Click();
             }
         }
 
         private void AdvancedOptions_MouseEvent(object sender, ControlMouseEventArgs e)
         {
             if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
-            advancedMode = !advancedMode;
-            RefreshTemplateStatus();
-            SetStatus(advancedMode
-                ? "Default mappings are included. Change only if needed."
-                : BuildReadyStatus());
+            BrowseMapping_Click();
+        }
+
+        private void AdvancedUseDefault_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
+                RestoreBundledMapping();
         }
 
         private void RefreshTemplate_MouseEvent(object sender, ControlMouseEventArgs e)
         {
             if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
             {
-                if (advancedMode) RestoreBundledMapping();
-                else RefreshTemplateStatus();
+                RefreshTemplateStatus();
             }
         }
 
@@ -926,16 +1502,11 @@ namespace ACCustoms
             observedPngStamp = QuickFileStamp(selectedTemplatePng);
             observedMappingStamp = QuickFileStamp(selectedMappingJson);
             if (TemplateLabel != null)
-                TemplateLabel.Text = advancedMode ? "MAPPING" : "THEME";
-            TemplatePngText.Text = advancedMode
-                ? (UsesBundledMapping() ? "Included mappings (default)"
-                    : Shorten(System.IO.Path.GetFileName(selectedMappingJson), 22))
-                : (String.IsNullOrWhiteSpace(selectedTemplatePng)
-                    ? "Choose theme..."
-                    : Shorten(System.IO.Path.GetFileName(selectedTemplatePng), 22));
-            if (BrowseTemplate != null) BrowseTemplate.Text = advancedMode ? "Change Mapping" : "Browse";
-            if (RefreshTemplate != null) RefreshTemplate.Text = advancedMode ? "Use Default" : "Refresh";
-            if (AdvancedOptions != null) AdvancedOptions.Text = advancedMode ? "Done" : "Advanced";
+                TemplateLabel.Text = "THEME";
+            TemplatePngText.Text = String.IsNullOrWhiteSpace(selectedTemplatePng)
+                ? "Choose theme..."
+                : Shorten(System.IO.Path.GetFileName(selectedTemplatePng), 22);
+            RefreshAdvancedMappingInfo();
             Color amber = Color.FromArgb(247, 186, 74);
             Color red = Color.FromArgb(232, 98, 103);
             Color green = Color.FromArgb(82, 210, 133);

@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "width": 2000,
   "height": 2000,
-  "pixelCrc32": "0x7398FD55",
+  "pixelCrc32": "0x77498CB1",
   "textures": [
     {"did": "06000133", "x": 529, "y": 930, "width": 20, "height": 20, "pixelFormat": "0x00000014", "method": "exact"},
     {"did": "0600015D", "x": 550, "y": 930, "width": 20, "height": 20, "pixelFormat": "0x00000014", "method": "exact"},
@@ -394,6 +394,8 @@
     {"did": "060011B9", "x": 655, "y": 1399, "width": 32, "height": 3, "pixelFormat": "0x00000014", "method": "manual"},
     {"did": "060011BA", "x": 688, "y": 1399, "width": 3, "height": 32, "pixelFormat": "0x00000014", "method": "manual"},
     {"did": "0600126F", "x": 882, "y": 1465, "width": 265, "height": 100, "pixelFormat": "0x00000014", "method": "manual"},
-    {"did": "06004CF4", "x": 228, "y": 696, "width": 146, "height": 31, "pixelFormat": "0x00000014", "method": "manual"}
+    {"did": "06004CF4", "x": 228, "y": 696, "width": 146, "height": 31, "pixelFormat": "0x00000014", "method": "manual"},
+    {"did": "06006215", "x": 539, "y": 1420, "width": 14, "height": 14, "pixelFormat": "0x00000015", "method": "manual"},
+    {"did": "06006216", "x": 539, "y": 1435, "width": 14, "height": 14, "pixelFormat": "0x00000015", "method": "manual"}
   ]
 }

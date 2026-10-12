@@ -88,6 +88,12 @@ namespace ACCustoms
         internal const string ReceiptFileName = "template-build.json";
         internal const string ManifestFileName = "manifest.json";
 
+        internal static void ValidateMappingFile(string path)
+        {
+            string mappingPath = RequireFile(path, "Mapping JSON");
+            ValidateMappings(ReadJson<TemplateMappingFile>(mappingPath));
+        }
+
         // The mapping's pixelCrc32 is informational, not a requirement: the
         // chosen PNG and chosen mapping file are the only necessary inputs.
         // In particular, the plugin must not depend on a baked-in master PNG.

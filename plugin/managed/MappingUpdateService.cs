@@ -1,7 +1,8 @@
 // AC Customs - opt-in, manifest-driven mapping release checks.
-// All network and disk IO happens on ThreadPool workers, never in VVS callbacks.
-// A download only stages versioned source files; it never alters a user's
-// selected mapping, edited PNG, or compiled texture outputs.
+// Network and download I/O runs on ThreadPool workers, never in VVS callbacks.
+// Official releases live in a durable per-user cache. The UI activates a
+// verified mapping only after the download has completed successfully.
+// Custom theme PNGs and compiled texture outputs are never overwritten.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -12,6 +13,7 @@ using System.Runtime.Serialization.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace ACCustoms
 {
@@ -43,15 +45,54 @@ namespace ACCustoms
 
         internal static string TargetFolder(MappingRelease release)
         {
-            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(profile, "Downloads", "ACCustoms", "v" + release.MappingVersion);
+            // Never reference Downloads for an active mapping. The mapping
+            // path remains valid if the user cleans their Downloads folder.
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ACCustoms", "MappingReleases", "v" + release.MappingVersion);
         }
 
         internal static MappingRelease GetLatest()
         {
-            var release = Parse(DownloadBytes(ManifestUrl, ManifestLimit));
-            Validate(release);
-            return release;
+            // On some machines the first TLS handshake during AC startup is
+            // aborted before the Windows/.NET security stack warms up. A brief
+            // background retry makes that transient failure self-healing.
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                try
+                {
+                    var release = Parse(DownloadBytes(ManifestUrl, ManifestLimit));
+                    Validate(release);
+                    return release;
+                }
+                catch (WebException ex)
+                {
+                    if (attempt == 2 || !IsTransientNetworkError(ex)) throw;
+                    Thread.Sleep((attempt + 1) * 750);
+                }
+            }
+            throw new IOException("Could not retrieve the official mapping manifest.");
+        }
+
+        private static bool IsTransientNetworkError(WebException ex)
+        {
+            switch (ex.Status)
+            {
+                case WebExceptionStatus.Timeout:
+                case WebExceptionStatus.ConnectionClosed:
+                case WebExceptionStatus.ConnectFailure:
+                case WebExceptionStatus.SendFailure:
+                case WebExceptionStatus.ReceiveFailure:
+                case WebExceptionStatus.KeepAliveFailure:
+                case WebExceptionStatus.SecureChannelFailure:
+                    return true;
+                case WebExceptionStatus.ProtocolError:
+                    var response = ex.Response as HttpWebResponse;
+                    return response != null && ((int)response.StatusCode == 429 ||
+                        (int)response.StatusCode >= 500);
+                default:
+                    return false;
+            }
         }
 
         internal static MappingRelease Parse(byte[] json)
@@ -103,12 +144,17 @@ namespace ACCustoms
 
         private static byte[] DownloadBytes(string url, int maxBytes)
         {
+            // Configure TLS before creating the request. Decal can inherit
+            // older .NET defaults; GitHub requires TLS 1.2 or later.
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             var request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "GET";
             request.UserAgent = "ACCustoms-MappingUpdate/1.0";
             request.Timeout = 10000;
             request.ReadWriteTimeout = 10000;
             request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            request.CachePolicy = new System.Net.Cache.RequestCachePolicy(
+                System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
             using (var response = (HttpWebResponse)request.GetResponse())
             using (var stream = response.GetResponseStream())
             using (var output = new MemoryStream())
@@ -135,9 +181,9 @@ namespace ACCustoms
                 return BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
         }
 
-        // The release descriptor is saved beside downloaded files. A version
-        // counts as installed only after the user chooses that exact mapping
-        // in Advanced, and only while its hash still matches the descriptor.
+        // The release descriptor is saved beside the persistent mapping.
+        // A version counts as installed only while its selected mapping file
+        // still matches the release's checksum, not merely after download.
         internal static string InstalledVersion(string selectedMapping, string bundledMapping,
             MappingRelease current)
         {
@@ -241,26 +287,41 @@ namespace ACCustoms
                     File.WriteAllBytes(Path.Combine(staged, Path.GetFileName(relative)), bytes);
                 }
 
+                // Validate the mapping's schema, rectangles and DIDs before
+                // publishing its release folder or attempting activation.
+                TemplateTextureCompiler.ValidateMappingFile(
+                    Path.Combine(staged, Path.GetFileName(release.Files["mapping"])));
+
                 using (var output = File.Create(Path.Combine(staged, "release-info.json")))
                     new DataContractJsonSerializer(typeof(MappingRelease),
                         new DataContractJsonSerializerSettings { UseSimpleDictionaryFormat = true }).WriteObject(output, release);
                 File.WriteAllText(Path.Combine(staged, "HOW_TO_INSTALL.txt"),
                     "AC Customs official mapping release v" + release.MappingVersion + "\r\n\r\n" +
-                    "1. Open AC Customs in-game.\r\n" +
-                    "2. Click Advanced, then Change Mapping. Choose " +
-                    Path.GetFileName(release.Files["mapping"]) + ".\r\n" +
-                    "3. Optionally open " + Path.GetFileName(release.Files["template"]) +
-                    " as the latest default template when creating/updating your art.\r\n" +
-                    "4. Regenerate textures and click Apply UI.\r\n\r\n" +
-                    "Existing custom PNGs are not modified automatically.\r\n");
+                    "Click Download & Install in the plugin to activate the official mapping.\r\n" +
+                    "Then click Generate Textures and Apply UI to use it with your custom PNG.\r\n\r\n" +
+                    "Files are stored permanently under LocalAppData, not Downloads.\r\n" +
+                    "The accompanying " + Path.GetFileName(release.Files["template"]) +
+                    " is a reference template; it does not replace your edited PNG.\r\n");
 
-                // Versioned destination only. Never write over the embedded
-                // mapping, the user's custom mapping, or their theme PNG.
-                // Existing downloaded files may have been edited by the user.
-                // Never erase or replace them without permission.
+                // If a user deleted or edited part of an old release cache,
+                // archive it rather than leaving them stuck on a broken path.
+                // The newly verified folder replaces only official cache data.
+                string archive = null;
                 if (Directory.Exists(final))
-                    throw new IOException("Release folder already exists. Rename it if you wish to download again.");
-                Directory.Move(staged, final);
+                {
+                    archive = final + ".previous-" + Guid.NewGuid().ToString("N");
+                    Directory.Move(final, archive);
+                }
+                try
+                {
+                    Directory.Move(staged, final);
+                }
+                catch
+                {
+                    if (archive != null && !Directory.Exists(final) && Directory.Exists(archive))
+                        Directory.Move(archive, final);
+                    throw;
+                }
                 return final;
             }
             finally
