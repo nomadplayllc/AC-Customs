@@ -44,6 +44,7 @@ namespace ACCustoms
         private static NativeCall getActiveMode;
         private static NativeSetFlag setDeveloperTests;
         private static NativeSetDirectory setReplacementDirectory;
+        private static NativeSetDirectory switchThemeDirectory;
         private static NativeSetDirectory setCaptureDirectory;
         private static NativeSetDirectory captureUiSnapshot;
         private static NativeSetDirectory captureControlStateLinks;
@@ -84,6 +85,12 @@ namespace ACCustoms
             getActiveMode = Resolve<NativeCall>("ACCustoms_GetActiveMode");
             setDeveloperTests = Resolve<NativeSetFlag>("ACCustoms_SetDeveloperTests");
             setReplacementDirectory = Resolve<NativeSetDirectory>("ACCustoms_SetReplacementDirectory");
+            // New native build required for in-place theme switching. Do not
+            // fall back to a managed Restore/Set/Apply sequence.
+            IntPtr switchProc = GetProcAddress(module, "ACCustoms_SwitchTheme");
+            if (switchProc != IntPtr.Zero)
+                switchThemeDirectory = Marshal.GetDelegateForFunctionPointer(
+                    switchProc, typeof(NativeSetDirectory)) as NativeSetDirectory;
             setCaptureDirectory = Resolve<NativeSetDirectory>("ACCustoms_SetCaptureDirectory");
             captureUiSnapshot = Resolve<NativeSetDirectory>("ACCustoms_CaptureUiSnapshot");
             captureControlStateLinks = Resolve<NativeSetDirectory>("ACCustoms_CaptureControlStateLinks");
@@ -135,6 +142,18 @@ namespace ACCustoms
             {
                 EnsureLoaded();
                 return setReplacementDirectory(directory) != 0;
+            }
+        }
+
+        public static bool SwitchTheme(string directory)
+        {
+            lock (Sync)
+            {
+                EnsureLoaded();
+                if (switchThemeDirectory == null)
+                    throw new InvalidOperationException(
+                        "Native DLL is outdated. Rebuild ACCustoms.Native.dll to enable direct theme switching.");
+                return switchThemeDirectory(directory) != 0;
             }
         }
 

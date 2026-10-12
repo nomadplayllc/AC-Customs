@@ -1,0 +1,126 @@
+--- a/plugin/native/ACCustoms.Native.cpp
++++ b/plugin/native/ACCustoms.Native.cpp
+@@ -14507,6 +14507,123 @@
+     return 1;
+ }
+ 
++// Atomic managed-requested transition from the current replacement set to a
++// different, already-compiled immutable cache. The UI never exposes the
++// intermediate Vanilla state, and neither set is ever rewritten in place.
++// ALL path/DID changes are synchronized under the control mutex + busy gate.
++extern "C" __declspec(dllexport) int __cdecl ACCustoms_SwitchTheme(const char* directory)
++{
++    if (!directory || !*directory ||
++        !g_ACCustomsInitialized.load(std::memory_order_acquire))
++        return 0;
++    const DWORD attrs = GetFileAttributesA(directory);
++    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY))
++        return 0;
++    // Reject empty/uncompiled sets before touching the active UI.
++    const std::string target(directory);
++    WIN32_FIND_DATAA fd = {};
++    HANDLE h = FindFirstFileA((target + R"(\*.rgb)").c_str(), &fd);
++    if (h == INVALID_HANDLE_VALUE)
++    {
++        WriteLog("ACCUSTOMS SWITCH rejected=EMPTY_TARGET path=" + target);
++        return 0;
++    }
++    FindClose(h);
++
++    bool expected = false;
++    if (!g_ACCustomsApplyInProgress.compare_exchange_strong(
++            expected, true, std::memory_order_acq_rel))
++        return 0;
++
++    int result = 0;
++    {
++        std::lock_guard<std::mutex> lock(g_ACCustomsControlMutex);
++        if (g_ACCustomsSnapshotWriterRunning.load(std::memory_order_acquire))
++        {
++            WriteLog("ACCUSTOMS SWITCH rejected=SNAPSHOT_ACTIVE");
++        }
++        else
++        {
++            const std::string previous = ACCustomsGetReplacementDirectory();
++            const ActiveThemeMode oldMode = GetActiveThemeMode();
++            if (oldMode == ActiveThemeMode::TestReplacement && previous == target)
++            {
++                result = 1;
++            }
++            else
++            {
++                // Restore every DID from the old theme, including ones not
++                // present in the new theme, BEFORE switching the lazy-load set.
++                bool restored = true;
++                if (oldMode == ActiveThemeMode::TestReplacement)
++                {
++                    SetActiveThemeMode(ActiveThemeMode::Vanilla, "SWITCH_RESTORE_OLD");
++                    const ApplySetStats st = ApplyReplacementSet(false);
++                    restored = st.failed == 0;
++                    if (!restored)
++                    {
++                        // Do not switch paths if restoration was partial. Reapply
++                        // the old set to recover the user's existing theme.
++                        SetActiveThemeMode(ActiveThemeMode::TestReplacement,
++                            "SWITCH_RESTORE_FAILED_RECOVER_OLD");
++                        ApplyReplacementSet(true);
++                        WriteLog("ACCUSTOMS SWITCH rejected=RESTORE_FAILED failed=" +
++                            std::to_string(st.failed));
++                    }
++                }
++                if (restored)
++                {
++                    {
++                        std::lock_guard<std::mutex> pathLock(g_ACCustomsPathMutex);
++                        g_ACCustomsReplacementDirectory = target;
++                    }
++                    Probe87LoadReplacementDidSet();
++                    // Ensure pre-existing new-theme DIDs have vanilla snapshots.
++                    CaptureResidentOriginalsForReplacementSet();
++                    SetActiveThemeMode(ActiveThemeMode::TestReplacement, "SWITCH_APPLY_NEW");
++                    const ApplySetStats applied = ApplyReplacementSet(true);
++                    if (applied.failed == 0)
++                    {
++                        result = 1;
++                        WriteLog("ACCUSTOMS SWITCH result=SUCCESS path=" + target +
++                            " applied=" + std::to_string(applied.applied));
++                    }
++                    else
++                    {
++                        // Best-effort rollback. Never blend old and new DIDs.
++                        SetActiveThemeMode(ActiveThemeMode::Vanilla,
++                            "SWITCH_APPLY_FAILED_RESTORE_NEW");
++                        const ApplySetStats cleanup = ApplyReplacementSet(false);
++                        {
++                            std::lock_guard<std::mutex> pathLock(g_ACCustomsPathMutex);
++                            g_ACCustomsReplacementDirectory = previous;
++                        }
++                        Probe87LoadReplacementDidSet();
++                        bool recovered = false;
++                        if (oldMode == ActiveThemeMode::TestReplacement && cleanup.failed == 0)
++                        {
++                            SetActiveThemeMode(ActiveThemeMode::TestReplacement,
++                                "SWITCH_FAILED_RECOVER_OLD");
++                            const ApplySetStats retry = ApplyReplacementSet(true);
++                            recovered = retry.failed == 0;
++                        }
++                        if (!recovered)
++                            SetActiveThemeMode(ActiveThemeMode::Vanilla,
++                                "SWITCH_FAILED_VANILLA_FALLBACK");
++                        WriteLog("ACCUSTOMS SWITCH result=FAILED newFailed=" +
++                            std::to_string(applied.failed) + " cleanupFailed=" +
++                            std::to_string(cleanup.failed) + " recoveredOld=" +
++                            std::to_string(recovered ? 1 : 0));
++                    }
++                }
++            }
++            Probe87QueueRootInvalidation(9);
++        }
++    }
++    g_ACCustomsApplyInProgress.store(false, std::memory_order_release);
++    return result;
++}
++
+ extern "C" __declspec(dllexport) int __cdecl ACCustoms_SetCaptureDirectory(const char* directory)
+ {
+     if (!directory || !*directory)

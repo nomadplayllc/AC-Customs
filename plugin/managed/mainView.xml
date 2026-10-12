@@ -2,7 +2,7 @@
 <view icon="8712" title="AC Customs" width="430" height="326">
   <control progid="DecalControls.FixedLayout" clipped="">
     <control progid="DecalControls.Notebook" name="MainTabs" left="0" top="0" width="430" height="326">
-      <page label="Theme">
+      <page label="My UI">
         <control progid="DecalControls.FixedLayout" name="ThemePageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="BrandTitle" left="18" top="11" width="394" height="24" fontface="Arial" fontsize="16" fontstyle="bold" text="AC CUSTOMS" />
           <control progid="DecalControls.StaticText" name="TemplateLabel" left="18" top="47" width="78" height="20" fontface="Arial" fontsize="11" fontstyle="bold" text="THEME" />
@@ -18,7 +18,7 @@
           <control progid="DecalControls.StaticText" name="StatusText" left="18" top="245" width="394" height="29" fontface="Arial" fontsize="11" text="" />
         </control>
       </page>
-      <page label="Themes">
+      <page label="Browse">
         <control progid="DecalControls.FixedLayout" name="ThemesPageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="ThemesHeader" left="18" top="12" width="394" height="25" fontface="Arial" fontsize="16" fontstyle="bold" text="THEME LIBRARY" />
           <control progid="DecalControls.StaticText" name="ThemesIntro" left="18" top="40" width="394" height="20" fontface="Arial" fontsize="10" text="Official themes from the AC Customs GitHub folder." />
@@ -29,10 +29,10 @@
           <control progid="DecalControls.StaticText" name="ThemesStatus" left="18" top="215" width="394" height="24" fontface="Arial" fontsize="11" text="Checking GitHub themes..." />
           <control progid="DecalControls.PushButton" name="ThemesRefresh" left="18" top="248" width="114" height="31" fontface="Arial" fontsize="11" text="Refresh" />
           <control progid="DecalControls.PushButton" name="ThemesInstall" left="141" top="248" width="132" height="31" fontface="Arial" fontsize="11" text="Install/Update" />
-          <control progid="DecalControls.PushButton" name="ThemesUse" left="282" top="248" width="130" height="31" fontface="Arial" fontsize="11" text="Use Theme" />
+          <control progid="DecalControls.PushButton" name="ThemesUse" left="282" top="248" width="130" height="31" fontface="Arial" fontsize="11" text="Apply Theme" />
         </control>
       </page>
-      <page label="Upload">
+      <page label="Share">
         <control progid="DecalControls.FixedLayout" name="UploadPageLayout" clipped="">
           <control progid="DecalControls.StaticText" name="UploadHeader" left="18" top="13" width="394" height="26" fontface="Arial" fontsize="16" fontstyle="bold" text="SHARE YOUR THEME" />
           <control progid="DecalControls.StaticText" name="UploadIntro" left="18" top="44" width="394" height="39" fontface="Arial" fontsize="11" text="Submit a 2000 x 2000 PNG for community review." />

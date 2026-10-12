@@ -160,8 +160,16 @@ namespace ACCustoms
         private static readonly string TemplateSourceSettingsPath = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ACCustoms", "master-template-source.txt");
-        private static readonly string GeneratedTemplateDirectory = System.IO.Path.Combine(
-            PackManager.PacksDirectory, GeneratedTemplateInstallId);
+        // Legacy single-slot cache remains on disk for backwards compatibility,
+        // but all new PNG builds use ThemeCache's content-addressed directories.
+        private string SelectedCacheDirectory()
+        {
+            return ThemeCache.DirectoryFor(selectedTemplatePng, selectedMappingJson);
+        }
+        private bool pendingAutoApplyBuild;
+        private string pendingAutoApplySource = String.Empty;
+        private string templateBuildOutputDirectory = String.Empty;
+        private bool themeInstallAutoApply;
         private static readonly string MappingSettingsPath = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ACCustoms", "master-template-mapping.txt");
@@ -424,7 +432,7 @@ namespace ACCustoms
                 {
                     if (!String.IsNullOrWhiteSpace(activeThemeDisplayName))
                         name = activeThemeDisplayName;
-                    else if (activePackInstallId == GeneratedTemplateInstallId &&
+                    else if (ThemeCache.IsCachePack(activePackInstallId) &&
                              !String.IsNullOrWhiteSpace(selectedTemplatePng))
                         name = System.IO.Path.GetFileNameWithoutExtension(selectedTemplatePng);
                     else
@@ -644,7 +652,7 @@ namespace ACCustoms
                 UiSecondaryButton, 114, 31, 14, false);
             RegisterButtonArtwork("ThemesInstall", themesInstall, "Install/Update",
                 UiPrimaryButton, 132, 31, 14, true);
-            RegisterButtonArtwork("ThemesUse", themesUse, "Use Theme",
+            RegisterButtonArtwork("ThemesUse", themesUse, "Apply Theme",
                 UiAdvancedButton, 130, 31, 14, true);
             RegisterButtonArtwork("UploadBrowse", uploadBrowse, "Select PNG",
                 UiAdvancedButton, 130, 31, 14, false);
@@ -1505,6 +1513,8 @@ namespace ACCustoms
             }
             if (installDone)
             {
+                bool automaticallyApply = themeInstallAutoApply;
+                themeInstallAutoApply = false;
                 if (installError != null)
                 {
                     themesFeedback = "Install failed: " + Shorten(installError, 80);
@@ -1515,10 +1525,10 @@ namespace ACCustoms
                     try
                     {
                         SelectThemePng(installedPath);
-                        themesFeedback = System.IO.Path.GetFileName(installedPath) +
-                            " installed. Generate Textures on Theme tab.";
-                        SetStatus(themesFeedback);
+                        themesFeedback = System.IO.Path.GetFileName(installedPath) + " installed.";
                         AppendMappingUpdateLog("Official theme installed: " + installedItem.Name);
+                        if (automaticallyApply) PrepareAndApplyTheme(installedPath);
+                        else SetStatus(themesFeedback);
                     }
                     catch (Exception ex)
                     {
@@ -1581,13 +1591,29 @@ namespace ACCustoms
             bool busy;
             lock (themeWorkerLock) busy = themeInstallRunning;
             ChangeButtonArtworkText("ThemesInstall", busy ? "Downloading..." :
-                selected == null ? "Install/Update" :
-                ThemeLibraryService.State(selected) == "Not installed" ? "Install" :
-                ThemeLibraryService.State(selected) == "Update available" ? "Update" : "Installed");
+                selected == null ? "Download" :
+                ThemeLibraryService.State(selected) == "Not installed" ? "Download" :
+                ThemeLibraryService.State(selected) == "Update available" ? "Update PNG" : "Installed");
+            ChangeButtonArtworkText("ThemesUse", busy ? "Downloading..." :
+                selected == null ? "Apply Theme" :
+                ThemeLibraryService.State(selected) == "Not installed" ? "Install & Apply" :
+                ThemeLibraryService.State(selected) == "Update available" ? "Update & Apply" :
+                IsOfficialThemeActive(selected) ? "Active" : "Apply Theme");
             TrySetVvsVisibility(themesInstall,
                 selected != null && !busy && ThemeLibraryService.State(selected) != "Installed");
             TrySetVvsVisibility(themesUse,
-                selected != null && !busy && ThemeLibraryService.InstalledSha(selected) != null);
+                selected != null && !busy && !IsTemplateBuildRunning() &&
+                !IsOfficialThemeActive(selected));
+        }
+
+        private bool IsOfficialThemeActive(GithubThemeItem item)
+        {
+            if (item == null || !nativeReady || NativeBridge.GetActiveMode() != 1 ||
+                ThemeLibraryService.InstalledSha(item) == null) return false;
+            try { return String.Equals(activePackInstallId,
+                ThemeCache.CacheId(ThemeLibraryService.ThemePath(item), selectedMappingJson),
+                StringComparison.Ordinal); }
+            catch { return false; }
         }
 
         private void ThemesList_Click(object sender, int row, int col)
@@ -1609,6 +1635,11 @@ namespace ACCustoms
         private void ThemesInstall_MouseEvent(object sender, ControlMouseEventArgs e)
         {
             if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
+            BeginOfficialThemeInstall(false);
+        }
+
+        private void BeginOfficialThemeInstall(bool applyAfterDownload)
+        {
             GithubThemeItem item = SelectedOfficialTheme();
             if (item == null) return;
             if (IsTemplateBuildRunning())
@@ -1619,9 +1650,14 @@ namespace ACCustoms
             }
             lock (themeWorkerLock)
             {
-                if (themeInstallRunning || themeInstallPending ||
-                    ThemeLibraryService.State(item) == "Installed") return;
+                if (themeInstallRunning || themeInstallPending) return;
+                if (ThemeLibraryService.State(item) == "Installed")
+                {
+                    if (applyAfterDownload) PrepareAndApplyTheme(ThemeLibraryService.ThemePath(item));
+                    return;
+                }
                 themeInstallRunning = true;
+                themeInstallAutoApply = applyAfterDownload;
                 installingTheme = item;
             }
             themesFeedback = "Downloading and checking " + item.Name + "...";
@@ -1646,27 +1682,35 @@ namespace ACCustoms
         {
             if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
             GithubThemeItem item = SelectedOfficialTheme();
-            if (item == null || ThemeLibraryService.InstalledSha(item) == null) return;
+            if (item == null) return;
             if (IsTemplateBuildRunning())
             {
-                themesFeedback = "Wait for texture generation to finish.";
+                themesFeedback = "Please wait for texture generation.";
                 RefreshThemesTab();
                 return;
             }
+            if (ThemeLibraryService.State(item) != "Installed")
+                BeginOfficialThemeInstall(true);
+            else
+                PrepareAndApplyTheme(ThemeLibraryService.ThemePath(item));
+        }
+
+        private void PrepareAndApplyTheme(string file)
+        {
             try
             {
-                string file = ThemeLibraryService.ThemePath(item);
                 ThemeLibraryService.ValidatePng(file);
                 SelectThemePng(file);
-                themesFeedback = item.Name + " selected. Generate Textures on Theme tab.";
-                RefreshThemesTab();
-                SetStatus(themesFeedback);
+                // A single call handles both cached and uncached themes:
+                // apply immediately if current, otherwise compile then apply.
+                BeginTemplateBuild(true);
+                themesFeedback = status;
             }
             catch (Exception ex)
             {
-                themesFeedback = "Could not select theme: " + ex.Message;
-                RefreshThemesTab();
+                themesFeedback = "Could not apply theme: " + Shorten(ex.Message, 72);
             }
+            RefreshThemesTab();
         }
 
         private void SelectThemePng(string file)
@@ -2023,7 +2067,7 @@ namespace ACCustoms
             }
             string detail;
             TemplateBuildState state = TemplateTextureCompiler.CheckStatusAll(
-                selectedTemplatePng, selectedMappingJson, GeneratedTemplateDirectory, out detail);
+                selectedTemplatePng, selectedMappingJson, SelectedCacheDirectory(), out detail);
             switch (state)
             {
                 case TemplateBuildState.UpToDate:
@@ -2133,6 +2177,13 @@ namespace ACCustoms
 
         private void GenerateTemplate_Click()
         {
+            BeginTemplateBuild(false);
+        }
+
+        // Workers write into a NEW immutable cache when either PNG, mapping,
+        // or compiler changes. There is no temporary return to Default UI.
+        private void BeginTemplateBuild(bool autoApply)
+        {
             try
             {
                 if (String.IsNullOrWhiteSpace(selectedTemplatePng) || !File.Exists(selectedTemplatePng))
@@ -2144,22 +2195,35 @@ namespace ACCustoms
                 if (String.IsNullOrWhiteSpace(selectedMappingJson) || !File.Exists(selectedMappingJson))
                 {
                     SetStatus("Mapping data missing. Reinstall AC Customs or use Advanced.");
-                    RefreshTemplateStatus();
                     return;
                 }
-                if (String.Equals(activePackInstallId, GeneratedTemplateInstallId, StringComparison.Ordinal) &&
+                if (IsTemplateBuildRunning())
+                {
+                    SetStatus("Texture generation is already running.");
+                    return;
+                }
+                string output = SelectedCacheDirectory();
+                string detail;
+                TemplateBuildState state = TemplateTextureCompiler.CheckStatusAll(
+                    selectedTemplatePng, selectedMappingJson, output, out detail);
+                if (state == TemplateBuildState.UpToDate)
+                {
+                    if (autoApply) ApplyGeneratedTemplate_Click();
+                    else SetStatus("Cached textures are already current. Click Apply UI.");
+                    return;
+                }
+                // Never replace even a damaged cache while the native engine
+                // could be reading from it; old content remains pinned to session.
+                if (ThemeCache.IsCachePack(activePackInstallId) &&
+                    String.Equals(activePackInstallId, System.IO.Path.GetFileName(output), StringComparison.Ordinal) &&
                     nativeReady && NativeBridge.GetActiveMode() == 1)
                 {
-                    SetStatus("Restore Default before regenerating the active theme.");
+                    SetStatus("Active cache needs repair. Restore Default UI before rebuilding this same cache.");
                     return;
                 }
                 lock (templateWorkerLock)
                 {
-                    if (templateBuildRunning)
-                    {
-                        SetStatus("Texture generation is already running.");
-                        return;
-                    }
+                    if (templateBuildRunning) return;
                     templateBuildRunning = true;
                     completedTemplateReport = null;
                     completedTemplateError = null;
@@ -2167,17 +2231,21 @@ namespace ACCustoms
                 }
                 string source = selectedTemplatePng;
                 string mappingSource = selectedMappingJson;
+                templateBuildOutputDirectory = output;
+                pendingAutoApplyBuild = autoApply;
+                pendingAutoApplySource = autoApply ? source : String.Empty;
                 RefreshTemplateStatus();
-                SetStatus("Generating textures...");
+                SetStatus("Preparing " + System.IO.Path.GetFileNameWithoutExtension(source) + " textures...");
+                if (autoApply)
+                {
+                    themesFeedback = "Generating textures; current UI stays active...";
+                    RefreshThemesTab();
+                }
                 ThreadPool.QueueUserWorkItem(delegate(object ignored)
                 {
                     TemplateBuildReport report = null;
                     string error = null;
-                    try
-                    {
-                        report = TemplateTextureCompiler.GenerateAll(
-                            source, mappingSource, GeneratedTemplateDirectory);
-                    }
+                    try { report = TemplateTextureCompiler.GenerateAll(source, mappingSource, output); }
                     catch (Exception ex) { error = ex.Message; }
                     lock (templateWorkerLock)
                     {
@@ -2190,6 +2258,7 @@ namespace ACCustoms
             catch (Exception ex)
             {
                 lock (templateWorkerLock) templateBuildRunning = false;
+                pendingAutoApplyBuild = false;
                 SetStatus("Generate failed: " + ex.Message);
                 RefreshTemplateStatus();
             }
@@ -2208,6 +2277,10 @@ namespace ACCustoms
                 templateBuildResultPending = false;
                 templateBuildRunning = false;
             }
+            bool auto = pendingAutoApplyBuild;
+            string requestedSource = pendingAutoApplySource;
+            pendingAutoApplyBuild = false;
+            pendingAutoApplySource = String.Empty;
             try
             {
                 RefreshTemplateStatus();
@@ -2216,16 +2289,32 @@ namespace ACCustoms
                     SetTemplateVisual("X", "GENERATION FAILED", error,
                         Color.FromArgb(232, 98, 103));
                     SetStatus("Texture generation failed: " + error);
+                    if (auto) { themesFeedback = "Generation failed: " + Shorten(error, 60); RefreshThemesTab(); }
                     return;
                 }
-                RefreshInstalledPacks(report != null && report.HasReplacementTextures
-                    ? GeneratedTemplateInstallId : PackManager.LoadLastSelectedInstallId());
                 if (report == null)
                 {
                     SetStatus("Generation did not return a result.");
                     return;
                 }
-                SetStatus("Textures ready. Click Apply UI.");
+                if (auto)
+                {
+                    // User may have chosen a different PNG or mapping during
+                    // the background build. Never apply an unintended theme.
+                    if (!String.Equals(requestedSource, selectedTemplatePng,
+                        StringComparison.OrdinalIgnoreCase) ||
+                        !String.Equals(report.OutputDirectory, SelectedCacheDirectory(),
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        SetStatus("Theme changed during generation. Cached output retained; apply when ready.");
+                        return;
+                    }
+                    ApplyGeneratedTemplate_Click();
+                    themesFeedback = "Theme prepared. " + status;
+                    RefreshThemesTab();
+                }
+                else
+                    SetStatus("Textures cached. Click Apply UI.");
             }
             catch (Exception ex) { SetStatus("Generation completion error: " + ex.Message); }
         }
@@ -2247,7 +2336,7 @@ namespace ACCustoms
             string detail;
             TemplateBuildState state = TemplateTextureCompiler.CheckStatusAll(
                 selectedTemplatePng, selectedMappingJson,
-                GeneratedTemplateDirectory, out detail);
+                SelectedCacheDirectory(), out detail);
             if (state != TemplateBuildState.UpToDate)
             {
                 RefreshTemplateStatus();
@@ -2258,7 +2347,7 @@ namespace ACCustoms
                     : "Theme is not ready. Check both selected files.");
                 return false;
             }
-            if (!File.Exists(System.IO.Path.Combine(GeneratedTemplateDirectory, "manifest.json")))
+            if (!File.Exists(System.IO.Path.Combine(SelectedCacheDirectory(), "manifest.json")))
             {
                 SetStatus("Generated theme files are incomplete. Regenerate textures.");
                 return false;
@@ -2271,14 +2360,11 @@ namespace ACCustoms
             try
             {
                 if (!CheckGeneratedTemplateReady()) return;
-                // Native theme application is shared with the deprecated ACUI path, including
-                // vanilla restore before switching, and the native Apply cooldown.
-                RefreshInstalledPacks(GeneratedTemplateInstallId);
-                InstalledPack generated = installedPacks.Find(p =>
-                    String.Equals(p.InstallId, GeneratedTemplateInstallId, StringComparison.Ordinal));
-                if (generated == null)
+                InstalledPack generated = ThemeCache.GetPack(selectedTemplatePng, selectedMappingJson);
+                if (!File.Exists(System.IO.Path.Combine(generated.RootDirectory, "manifest.json")) ||
+                    !Directory.Exists(generated.TexturesDirectory))
                 {
-                    SetStatus("Generated pack is missing or invalid. Regenerate textures.");
+                    SetStatus("Cached textures are missing. Regenerate textures.");
                     return;
                 }
                 ApplyInstalledPack(generated);
@@ -2489,10 +2575,6 @@ namespace ACCustoms
                 SetStatus("Wait for texture generation to finish before applying a theme.");
                 return;
             }
-            if (String.Equals(selected.InstallId, GeneratedTemplateInstallId, StringComparison.Ordinal)
-                && !CheckGeneratedTemplateReady())
-                return;
-
             if (String.Equals(activePackInstallId, selected.InstallId, StringComparison.Ordinal) &&
                 NativeBridge.GetActiveMode() == 1)
             {
@@ -2502,46 +2584,39 @@ namespace ACCustoms
             }
             if (!BeginChange()) return;
 
-            // Theme A -> Theme B is intentionally Vanilla -> B. DIDs only in
-            // theme A must be restored before loading theme B.
-            if (!String.IsNullOrEmpty(activePackInstallId))
-            {
-                SetStatus("Restoring AC Default before switching UIs...");
-                if (!RestoreActiveThemeInternal(false))
-                {
-                    SetStatus("Restore incomplete; UI switch aborted");
-                    return;
-                }
-            }
-            if (!NativeBridge.SetReplacementDirectory(selected.TexturesDirectory))
-            {
-                SetStatus("Could not select theme directory");
-                return;
-            }
-            SetStatus("Applying theme...");
-            bool ok = NativeBridge.ApplyReplacement();
-            string selectedDisplayName =
-                String.Equals(selected.InstallId, GeneratedTemplateInstallId,
-                    StringComparison.Ordinal) &&
-                !String.IsNullOrWhiteSpace(selectedTemplatePng)
-                    ? System.IO.Path.GetFileNameWithoutExtension(selectedTemplatePng)
-                    : selected.Name;
-            if (NativeBridge.GetActiveMode() == 1)
+            // Native transition restores old DIDs and applies new DIDs under a
+            // single control lock, with rollback. Never expose a manual Default
+            // UI step between already-cached themes.
+            string previousId = activePackInstallId;
+            string previousDisplay = activeThemeDisplayName;
+            SetStatus("Switching to " + selected.Name + "...");
+            bool ok = NativeBridge.SwitchTheme(selected.TexturesDirectory);
+            if (ok && NativeBridge.GetActiveMode() == 1)
             {
                 activePackInstallId = selected.InstallId;
-                activeThemeDisplayName = selectedDisplayName;
+                activeThemeDisplayName = selected.Name;
+                PackManager.SaveLastSelectedInstallId(selected.InstallId);
+                SetStatus(selected.Name + " applied.");
             }
-            UpdateCurrentUiText();
-            if (!ok)
+            else
             {
-                SetStatus("Apply incomplete - restore AC Default or restart AC");
-                return;
+                // Native switch may have recovered the old theme, or fallen
+                // back to Vanilla. Do not report a new theme as active on error.
+                if (NativeBridge.GetActiveMode() == 1)
+                {
+                    activePackInstallId = previousId;
+                    activeThemeDisplayName = previousDisplay;
+                }
+                else
+                {
+                    activePackInstallId = String.Empty;
+                    activeThemeDisplayName = String.Empty;
+                }
+                SetStatus("Theme switch failed. " +
+                    (NativeBridge.GetActiveMode() == 1 ? "Previous theme retained." : "Default UI restored."));
             }
-            activePackInstallId = selected.InstallId;
-            activeThemeDisplayName = selectedDisplayName;
-            PackManager.SaveLastSelectedInstallId(selected.InstallId);
             UpdateCurrentUiText();
-            SetStatus("Theme applied.");
+            RefreshThemesTab();
         }
 
         private void RestoreVanilla_Click(object sender, EventArgs e)
