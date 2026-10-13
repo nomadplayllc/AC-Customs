@@ -63,6 +63,8 @@
     <Compile Include="PackManager.cs" />
     <Compile Include="TemplateTextureCompiler.cs" />
     <Compile Include="MappingUpdateService.cs" />
+    <Compile Include="PluginUpdateService.cs" />
+    <Compile Include="PluginUpdateUi.cs" />
     <Compile Include="ThemeLibraryService.cs" />
     <Compile Include="ThemeCache.cs" />
     <Compile Include="TemplateDownloadService.cs" />
@@ -70,6 +72,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The updater EXE is embedded into the managed DLL. Distribute only two DLLs. -->
+    <EmbeddedResource Include="..\updater\bin\$(Configuration)\ACCustoms.Updater.exe">
+      <LogicalName>ACCustoms.Updater.exe</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="CheckMarkIcon.png"><LogicalName>ACCustoms.Icons.CheckMarkIcon.png</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="RedXIcon.png"><LogicalName>ACCustoms.Icons.RedXIcon.png</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="UpArrowIcon.png"><LogicalName>ACCustoms.Icons.UpArrowIcon.png</LogicalName></EmbeddedResource>
@@ -94,6 +100,13 @@
   <Target Name="ValidateVvs" BeforeTargets="ResolveAssemblyReferences">
     <Error Condition=" '$(VvsDir)' == '' or !Exists('$(VvsAssemblyPath)') "
       Text="VirindiViewService.dll was not found. Install the Virindi Plugin Bundle and supply VvsDir, or use scripts/build_managed.cmd." />
+  </Target>
+
+  <Target Name="BuildEmbeddedUpdater" BeforeTargets="AssignTargetPaths">
+    <MSBuild Projects="..\updater\ACCustoms.Updater.csproj" Targets="Build"
+      Properties="Configuration=$(Configuration);Platform=x86" />
+    <Error Condition="!Exists('..\updater\bin\$(Configuration)\ACCustoms.Updater.exe')"
+      Text="ACCustoms.Updater.exe was not built; cannot embed the automatic updater." />
   </Target>
 
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

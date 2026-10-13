@@ -13,7 +13,7 @@ namespace ACCustoms
 {
     [WireUpBaseEvents]
     [FriendlyName("AC Customs")]
-    public sealed class PluginCore : PluginBase
+    public sealed partial class PluginCore : PluginBase
     {
         private static readonly TimeSpan ApplyCooldown = TimeSpan.FromSeconds(3);
         // One palette for the MAIN window AND the MAPPING UPDATE window.
@@ -40,6 +40,7 @@ namespace ACCustoms
         // Native VVS notebook: real tabs, no tab-shaped buttons or extra VVS icon.
         // VVS creates one notebook in one HudView, just like other Decal plugins.
         private bool viewHasUpdateTab;
+        private bool viewHasPluginUpdateTab;
         private bool notebookRebuildRequested;
         private bool rebuildingNotebook;
         private Size lastNotebookClientArea = Size.Empty;
@@ -66,6 +67,11 @@ namespace ACCustoms
         // contents API supplies file SHA identifiers; there is no theme catalog.
         private readonly object themeWorkerLock = new object();
         private readonly List<GithubThemeItem> availableThemes = new List<GithubThemeItem>();
+        // The catalog remains public; removal hides an official item locally.
+        // Users can restore all hidden items without downloading anything.
+        private readonly List<GithubThemeItem> allGithubThemes = new List<GithubThemeItem>();
+        private readonly HashSet<string> hiddenOfficialThemes =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private int selectedOfficialTheme = -1;
         private bool themeCatalogRunning, themeCatalogReady, themeCatalogPending;
         private List<GithubThemeItem> themeCatalogResult;
@@ -82,20 +88,110 @@ namespace ACCustoms
         private HudList themesList;
         private HudStaticText themesHeader, themesIntro, themesStatus;
         private HudButton themesRefresh, themesInstall, themesUse;
-        private HudButton themesAddLocal;
+        private HudButton themesAddLocal, themesRemove, themesRebuild, themesRestoreHidden;
         private readonly List<string> localThemeFiles = new List<string>();
         private int selectedLibraryRow = -1;
         private static readonly string LocalThemesDirectory = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ACCustoms", "Themes", "Local");
+        private static readonly string LocalSourceRegistry = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ACCustoms", "Themes", "local-sources.txt");
+        private static readonly string HiddenOfficialRegistry = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ACCustoms", "Themes", "hidden-official.txt");
+
+        // A legacy copied PNG lives in Themes/Local. New additions are linked
+        // to their ORIGINAL source files, so saving from an art editor is enough.
+        private static List<string> ReadRegistry(string path)
+        {
+            try { return File.Exists(path) ? new List<string>(File.ReadAllLines(path)) : new List<string>(); }
+            catch (IOException) { return new List<string>(); }
+            catch (UnauthorizedAccessException) { return new List<string>(); }
+        }
+
+        private static void WriteRegistry(string path, IEnumerable<string> entries)
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+            string temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.WriteAllLines(temp, new List<string>(entries).ToArray());
+                if (File.Exists(path)) File.Replace(temp, path, null);
+                else File.Move(temp, path);
+            }
+            finally { if (File.Exists(temp)) File.Delete(temp); }
+        }
+
+        private void LoadHiddenOfficialThemes()
+        {
+            hiddenOfficialThemes.Clear();
+            foreach (string name in ReadRegistry(HiddenOfficialRegistry))
+                if (ThemeLibraryService.IsSafeName(name)) hiddenOfficialThemes.Add(name);
+        }
+
+        private void SaveHiddenOfficialThemes()
+        {
+            var names = new List<string>(hiddenOfficialThemes);
+            names.Sort(StringComparer.OrdinalIgnoreCase);
+            WriteRegistry(HiddenOfficialRegistry, names);
+        }
 
         private void ReloadLocalThemes()
         {
             localThemeFiles.Clear();
-            if (!Directory.Exists(LocalThemesDirectory)) return;
-            foreach (string file in Directory.GetFiles(LocalThemesDirectory, "*.png"))
-                if (File.Exists(file)) localThemeFiles.Add(file);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (Directory.Exists(LocalThemesDirectory))
+                foreach (string file in Directory.GetFiles(LocalThemesDirectory, "*.png"))
+                {
+                    string fullPath = System.IO.Path.GetFullPath(file);
+                    if (seen.Add(fullPath)) localThemeFiles.Add(fullPath);
+                }
+            foreach (string stored in ReadRegistry(LocalSourceRegistry))
+            {
+                try
+                {
+                    // Keep missing linked sources visible, so Remove can unlink them.
+                    if (!System.IO.Path.IsPathRooted(stored)) continue;
+                    string fullPath = System.IO.Path.GetFullPath(stored);
+                    if (String.Equals(System.IO.Path.GetExtension(fullPath), ".png",
+                        StringComparison.OrdinalIgnoreCase) && seen.Add(fullPath))
+                        localThemeFiles.Add(fullPath);
+                }
+                catch (ArgumentException) { }
+                catch (NotSupportedException) { }
+            }
             localThemeFiles.Sort(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static bool IsManagedLocalCopy(string path)
+        {
+            return String.Equals(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path)),
+                System.IO.Path.GetFullPath(LocalThemesDirectory), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddLocalSource(string file)
+        {
+            var paths = ReadRegistry(LocalSourceRegistry);
+            if (!paths.Exists(p => String.Equals(p, file, StringComparison.OrdinalIgnoreCase)))
+            {
+                paths.Add(file);
+                WriteRegistry(LocalSourceRegistry, paths);
+            }
+        }
+
+        private static void UnlinkLocalSource(string file)
+        {
+            var paths = ReadRegistry(LocalSourceRegistry);
+            paths.RemoveAll(p => String.Equals(p, file, StringComparison.OrdinalIgnoreCase));
+            WriteRegistry(LocalSourceRegistry, paths);
+        }
+
+        private void RefilterOfficialThemes()
+        {
+            availableThemes.Clear();
+            foreach (GithubThemeItem item in allGithubThemes)
+                if (!hiddenOfficialThemes.Contains(item.Name)) availableThemes.Add(item);
         }
 
         private bool IsLibraryLocalSelection()
@@ -151,29 +247,12 @@ namespace ACCustoms
                     dialog.Filter = "PNG Themes (*.png)|*.png";
                     if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
                     ThemeLibraryService.ValidatePng(dialog.FileName);
-                    Directory.CreateDirectory(LocalThemesDirectory);
-                    string basename = System.IO.Path.GetFileName(dialog.FileName);
-                    string target = System.IO.Path.Combine(LocalThemesDirectory, basename);
-                    if (String.Equals(System.IO.Path.GetFullPath(dialog.FileName),
-                        System.IO.Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
-                    {
-                        themesFeedback = "Local theme already added.";
-                    }
-                    else
-                    {
-                        // Never modify a cached/active source file in place. When
-                        // reimporting a name, use a new filename to protect it.
-                        if (File.Exists(target))
-                        {
-                            string stem = System.IO.Path.GetFileNameWithoutExtension(basename);
-                            int index = 2;
-                            do { target = System.IO.Path.Combine(LocalThemesDirectory,
-                                stem + " (" + index++ + ").png"); }
-                            while (File.Exists(target));
-                        }
-                        File.Copy(dialog.FileName, target, false);
-                        themesFeedback = System.IO.Path.GetFileName(target) + " added to local library.";
-                    }
+                    string target = System.IO.Path.GetFullPath(dialog.FileName);
+                    // Link the artwork rather than copying it: external edits
+                    // now participate directly in the SHA-based texture cache.
+                    AddLocalSource(target);
+                    themesFeedback = System.IO.Path.GetFileName(target) +
+                        " linked. Edit the original PNG, then click Rebuild.";
                     ReloadLocalThemes();
                     selectedLibraryRow = availableThemes.Count + localThemeFiles.FindIndex(f =>
                         String.Equals(f, target, StringComparison.OrdinalIgnoreCase));
@@ -253,6 +332,19 @@ namespace ACCustoms
         // The display name is captured on a successful Apply. Choosing a new
         // theme file does not change the name of the UI already active in AC.
         private string activeThemeDisplayName = String.Empty;
+        private string activeThemeSourcePath = String.Empty;
+
+        private bool IsActiveThemeSource(string file)
+        {
+            try
+            {
+                return !String.IsNullOrEmpty(file) && !String.IsNullOrEmpty(activeThemeSourcePath) &&
+                    nativeReady && NativeBridge.GetActiveMode() == 1 &&
+                    String.Equals(System.IO.Path.GetFullPath(file), activeThemeSourcePath,
+                        StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
         private List<InstalledPack> installedPacks = new List<InstalledPack>();
 
         private HudStaticText CurrentUiText = null;
@@ -359,6 +451,7 @@ namespace ACCustoms
                     NativeBridge.SetDeveloperTests(false);
                 }
 
+                LoadHiddenOfficialThemes();
                 RefreshInstalledPacks(PackManager.LoadLastSelectedInstallId());
                 UpdateCurrentUiText();
 
@@ -370,6 +463,7 @@ namespace ACCustoms
                 // LoginComplete triggers another check after character login.
                 // Also check once at startup if the plugin loads into an active session.
                 BeginMappingUpdateCheck();
+                BeginPluginUpdateCheck();
                 BeginThemeCatalogCheck();
             }
             catch (Exception ex)
@@ -455,6 +549,7 @@ namespace ACCustoms
                 if (view == null)
                     Host.Actions.AddChatText("AC Customs: waiting for its VVS window. Ensure Virindi View Service is installed and enabled in Decal Services; restart AC after enabling it.", 3);
                 BeginMappingUpdateCheck();
+                BeginPluginUpdateCheck();
                 BeginThemeCatalogCheck();
             }
             catch (Exception ex)
@@ -588,6 +683,7 @@ namespace ACCustoms
             using (StreamReader reader = new StreamReader(stream))
                 layoutXml = reader.ReadToEnd();
             viewHasUpdateTab = mappingUpdateVisible;
+            viewHasPluginUpdateTab = pluginUpdateVisible;
             // Hide the entire native tab until there is a real update; parsing
             // the same notebook layout prevents disabled/empty tab placeholders.
             if (!viewHasUpdateTab)
@@ -598,6 +694,16 @@ namespace ACCustoms
                 int last = layoutXml.IndexOf(end, StringComparison.Ordinal);
                 if (first < 0 || last < first)
                     throw new InvalidDataException("Update notebook template markers missing.");
+                layoutXml = layoutXml.Remove(first, last + end.Length - first);
+            }
+            if (!viewHasPluginUpdateTab)
+            {
+                const string begin = "<!-- AC_PLUGIN_UPDATE_PAGE_BEGIN -->";
+                const string end = "<!-- AC_PLUGIN_UPDATE_PAGE_END -->";
+                int first = layoutXml.IndexOf(begin, StringComparison.Ordinal);
+                int last = layoutXml.IndexOf(end, StringComparison.Ordinal);
+                if (first < 0 || last < first)
+                    throw new InvalidDataException("Plugin update notebook template markers missing.");
                 layoutXml = layoutXml.Remove(first, last + end.Length - first);
             }
             new VirindiViewService.XMLParsers.Decal3XMLParser().Parse(layoutXml, out properties, out controls);
@@ -643,6 +749,9 @@ namespace ACCustoms
             themesInstall = (HudButton)view["ThemesInstall"];
             themesUse = (HudButton)view["ThemesUse"];
             themesAddLocal = (HudButton)view["ThemesAddLocal"];
+            themesRemove = (HudButton)view["ThemesRemove"];
+            themesRebuild = (HudButton)view["ThemesRebuild"];
+            themesRestoreHidden = (HudButton)view["ThemesRestoreHidden"];
             uploadHeader = (HudStaticText)view["UploadHeader"];
             uploadIntro = (HudStaticText)view["UploadIntro"];
             uploadFilename = null;
@@ -653,6 +762,7 @@ namespace ACCustoms
             templateDownload = (HudButton)view["TemplateDownload"];
             templateDownloadStatus = (HudStaticText)view["TemplateDownloadStatus"];
             AdvancedCheckUpdates = (HudButton)view["AdvancedCheckUpdates"];
+            advancedPluginCheck = (HudButton)view["AdvancedPluginCheck"];
             AdvancedHeader = (HudStaticText)view["AdvancedHeader"];
             AdvancedInfo = (HudStaticText)view["AdvancedInfo"];
             AdvancedMappingVersion = (HudStaticText)view["AdvancedMappingVersion"];
@@ -680,13 +790,27 @@ namespace ACCustoms
             AdvancedUseDefault.MouseEvent += AdvancedUseDefault_MouseEvent;
             RestoreVanilla.MouseEvent += RestoreVanilla_MouseEvent;
             AdvancedCheckUpdates.MouseEvent += AdvancedCheckUpdates_MouseEvent;
+            advancedPluginCheck.MouseEvent += AdvancedPluginCheck_MouseEvent;
             themesList.Click += ThemesList_Click;
             themesRefresh.MouseEvent += ThemesRefresh_MouseEvent;
             themesInstall.MouseEvent += ThemesInstall_MouseEvent;
             themesUse.MouseEvent += ThemesUse_MouseEvent;
             themesAddLocal.MouseEvent += ThemesAddLocal_MouseEvent;
+            themesRemove.MouseEvent += ThemesRemove_MouseEvent;
+            themesRebuild.MouseEvent += ThemesRebuild_MouseEvent;
+            themesRestoreHidden.MouseEvent += ThemesRestoreHidden_MouseEvent;
             uploadSubmit.MouseEvent += UploadSubmit_MouseEvent;
             templateDownload.MouseEvent += TemplateDownload_MouseEvent;
+            if (viewHasPluginUpdateTab)
+            {
+                pluginUpdateHeader = (HudStaticText)view["PluginUpdateHeader"];
+                pluginUpdateInstalled = (HudStaticText)view["PluginUpdateInstalled"];
+                pluginUpdateAvailable = (HudStaticText)view["PluginUpdateAvailable"];
+                pluginUpdateStatus = (HudStaticText)view["PluginUpdateStatus"];
+                pluginUpdateNotes = (HudList)view["PluginUpdateNotes"];
+                pluginUpdateButton = (HudButton)view["PluginUpdateButton"];
+                pluginUpdateButton.MouseEvent += PluginUpdateButton_MouseEvent;
+            }
             if (viewHasUpdateTab)
             {
                 updateOpenFolderButton.MouseEvent += UpdateOpenFolder_MouseEvent;
@@ -696,6 +820,7 @@ namespace ACCustoms
             RefreshMappingUpdateButton();
             RefreshAdvancedMappingInfo();
             if (viewHasUpdateTab) RefreshMappingUpdateWindow();
+            RefreshPluginUpdatePage();
             TryApplyCustomViewIcon();
             RefreshInstalledPacks(null);
             RefreshTemplateStatus();
@@ -736,11 +861,11 @@ namespace ACCustoms
             TrySetColor(TemplatePngText, UiMuted);
             TrySetColor(StatusText, UiBodyText);
             foreach (object heading in new object[] { AdvancedHeader, AdvancedMappingLabel,
-                UpdateHeader, UpdateNotesHeader })
+                UpdateHeader, UpdateNotesHeader, pluginUpdateHeader })
                 TrySetColor(heading, UiGold);
             foreach (object info in new object[] { AdvancedInfo, AdvancedMappingVersion,
                 AdvancedFooter, AdvancedMappingFile, AdvancedMappingHint,
-                UpdateInstructions, updateInstalledText })
+                UpdateInstructions, updateInstalledText, pluginUpdateInstalled })
                 TrySetColor(info, UiMuted);
             foreach (object heading in new object[] { themesHeader, uploadHeader })
                 TrySetColor(heading, UiGold);
@@ -749,6 +874,8 @@ namespace ACCustoms
             TrySetColor(themesStatus, UiBodyText);
             TrySetColor(uploadStatus, UiBodyText);
             TrySetColor(updateAvailableText, UiBlue);
+            TrySetColor(pluginUpdateAvailable, UiBlue);
+            TrySetColor(pluginUpdateStatus, UiMuted);
             TrySetColor(updateStatusText, UiMuted);
 
             // An ordinary VVS PushButton lets a skin paint its own caption,
@@ -765,13 +892,19 @@ namespace ACCustoms
             RegisterButtonArtwork("RestoreVanilla", RestoreVanilla, "Restore Classic UI",
                 UiSecondaryButton, 166, 28, 13, false);
             RegisterButtonArtwork("ThemesRefresh", themesRefresh, "Refresh",
-                UiSecondaryButton, 82, 31, 13, false);
-            RegisterButtonArtwork("ThemesInstall", themesInstall, "Download",
-                UiPrimaryButton, 88, 31, 13, false);
+                UiSecondaryButton, 62, 31, 12, false);
             RegisterButtonArtwork("ThemesAddLocal", themesAddLocal, "Add Local",
-                UiSecondaryButton, 112, 31, 13, false);
+                UiSecondaryButton, 80, 31, 12, false);
+            RegisterButtonArtwork("ThemesRemove", themesRemove, "Remove",
+                UiSecondaryButton, 66, 31, 12, false);
+            RegisterButtonArtwork("ThemesInstall", themesInstall, "Download",
+                UiPrimaryButton, 75, 31, 12, false);
+            RegisterButtonArtwork("ThemesRebuild", themesRebuild, "Rebuild",
+                UiGenerateButton, 75, 31, 12, false);
             RegisterButtonArtwork("ThemesUse", themesUse, "Apply",
-                UiAdvancedButton, 91, 31, 13, false);
+                UiAdvancedButton, 91, 31, 12, false);
+            RegisterButtonArtwork("ThemesRestoreHidden", themesRestoreHidden, "Restore Hidden",
+                UiSecondaryButton, 116, 24, 11, false);
             RegisterButtonArtwork("TemplateDownload", templateDownload, "Download Template",
                 UiSecondaryButton, 160, 29, 13, false);
             RegisterButtonArtwork("UploadSubmit", uploadSubmit, "Submit Your Theme",
@@ -782,6 +915,10 @@ namespace ACCustoms
                 UiAdvancedButton, 125, 28, 13, false);
             RegisterButtonArtwork("AdvancedCheckUpdates", AdvancedCheckUpdates, "Check Updates",
                 UiSecondaryButton, 177, 32, 13, true);
+            RegisterButtonArtwork("AdvancedPluginCheck", advancedPluginCheck, "Check Plugin Version",
+                UiSecondaryButton, 207, 32, 12, true);
+            RegisterButtonArtwork("PluginUpdateButton", pluginUpdateButton, "Update Plugin",
+                UiPrimaryButton, 394, 31, 14, true);
             RegisterButtonArtwork("UpdateOpenFolder", updateOpenFolderButton, "View Files",
                 UiSecondaryButton, 82, 29, 13, false);
             RegisterButtonArtwork("UpdateDownload", updateDownloadButton, "Install Update",
@@ -811,7 +948,8 @@ namespace ACCustoms
                 ApplyLayoutBackground(view.Controls.HeadControl))
                 skinnedPageLayouts.Add("__root");
             foreach (string name in new[] { "ThemesPageLayout",
-                "UploadPageLayout", "AdvancedPageLayout", "UpdatePageLayout" })
+                "UploadPageLayout", "AdvancedPageLayout", "UpdatePageLayout",
+                "PluginUpdatePageLayout" })
             {
                 if (skinnedPageLayouts.Contains(name)) continue;
                 try
@@ -969,11 +1107,16 @@ namespace ACCustoms
             if (ImportPack != null) ImportPack.MouseEvent -= ImportPack_MouseEvent;
             if (RestoreVanilla != null) RestoreVanilla.MouseEvent -= RestoreVanilla_MouseEvent;
             if (AdvancedCheckUpdates != null) AdvancedCheckUpdates.MouseEvent -= AdvancedCheckUpdates_MouseEvent;
+            if (advancedPluginCheck != null) advancedPluginCheck.MouseEvent -= AdvancedPluginCheck_MouseEvent;
+            if (pluginUpdateButton != null) pluginUpdateButton.MouseEvent -= PluginUpdateButton_MouseEvent;
             if (themesList != null) themesList.Click -= ThemesList_Click;
             if (themesRefresh != null) themesRefresh.MouseEvent -= ThemesRefresh_MouseEvent;
             if (themesInstall != null) themesInstall.MouseEvent -= ThemesInstall_MouseEvent;
             if (themesUse != null) themesUse.MouseEvent -= ThemesUse_MouseEvent;
             if (themesAddLocal != null) themesAddLocal.MouseEvent -= ThemesAddLocal_MouseEvent;
+            if (themesRemove != null) themesRemove.MouseEvent -= ThemesRemove_MouseEvent;
+            if (themesRebuild != null) themesRebuild.MouseEvent -= ThemesRebuild_MouseEvent;
+            if (themesRestoreHidden != null) themesRestoreHidden.MouseEvent -= ThemesRestoreHidden_MouseEvent;
             if (uploadSubmit != null) uploadSubmit.MouseEvent -= UploadSubmit_MouseEvent;
             if (templateDownload != null) templateDownload.MouseEvent -= TemplateDownload_MouseEvent;
             if (updateOpenFolderButton != null) updateOpenFolderButton.MouseEvent -= UpdateOpenFolder_MouseEvent;
@@ -1001,10 +1144,14 @@ namespace ACCustoms
             BrandTitle = BrandSubtitle = TemplateLabel = null;
             BrowseTemplate = RefreshTemplate = GenerateTemplate = ApplyGeneratedTemplate = AdvancedOptions = null;
             AdvancedCheckUpdates = AdvancedUseDefault = null;
+            advancedPluginCheck = null;
+            pluginUpdateHeader = pluginUpdateInstalled = pluginUpdateAvailable = pluginUpdateStatus = null;
+            pluginUpdateNotes = null;
+            pluginUpdateButton = null;
             AdvancedMappingLabel = AdvancedMappingFile = AdvancedMappingHint = null;
             AdvancedHeader = AdvancedInfo = AdvancedMappingVersion = AdvancedFooter = null;
             themesHeader = themesIntro = themesStatus = null;
-            themesAddLocal = null;
+            themesAddLocal = themesRemove = themesRebuild = themesRestoreHidden = null;
             themesList = null;
             themesRefresh = themesInstall = themesUse = null;
             uploadHeader = uploadIntro = uploadFilename = uploadGuidelines = uploadStatus = null;
@@ -1022,6 +1169,7 @@ namespace ACCustoms
             // completion exactly once here, on the normal Decal render thread.
             FinishTemplateBuildIfReady();
             FinishMappingUpdateWorkers();
+            FinishPluginUpdateWorkers();
             FinishThemeWorkers();
             FinishTemplateDownload();
             if (DateTime.UtcNow >= nextThemeRetryUtc && !updateShuttingDown)
@@ -1036,6 +1184,11 @@ namespace ACCustoms
             {
                 nextAutomaticMappingRetryUtc = DateTime.MaxValue;
                 BeginMappingUpdateCheck();
+            }
+            if (!updateShuttingDown && DateTime.UtcNow >= nextAutomaticPluginCheckUtc)
+            {
+                nextAutomaticPluginCheckUtc = DateTime.UtcNow.AddHours(1);
+                BeginPluginUpdateCheck();
             }
             PollTemplateFileChanges();
             if (view != null || viewFailed || DateTime.UtcNow < nextViewAttemptUtc)
@@ -1403,10 +1556,13 @@ namespace ACCustoms
                 }
                 catch { }
             }
-            TryNotebookControlRect("ThemesStatus", 18, 215 + dy, 394 + dx, 24);
-            TryNotebookControlRect("ThemesRefresh", 18, 248 + dy, 82, 31);
-            TryNotebookControlRect("ThemesAddLocal", 108, 248 + dy, 112, 31);
-            TryNotebookControlRect("ThemesInstall", 228 + dx / 2, 248 + dy, 88, 31);
+            TryNotebookControlRect("ThemesStatus", 18, 215 + dy, 270 + dx, 24);
+            TryNotebookControlRect("ThemesRestoreHidden", 296 + dx, 215 + dy, 116, 24);
+            TryNotebookControlRect("ThemesRefresh", 18, 248 + dy, 62, 31);
+            TryNotebookControlRect("ThemesAddLocal", 84, 248 + dy, 80, 31);
+            TryNotebookControlRect("ThemesRemove", 168, 248 + dy, 66, 31);
+            TryNotebookControlRect("ThemesInstall", 238 + dx / 2, 248 + dy, 75, 31);
+            TryNotebookControlRect("ThemesRebuild", 238 + dx / 2, 248 + dy, 75, 31);
             TryNotebookControlRect("ThemesUse", 321 + dx, 248 + dy, 91, 31);
 
             // Share page: open the hosted submission form; no in-plugin upload.
@@ -1427,10 +1583,33 @@ namespace ACCustoms
             TryNotebookControlRect("AdvancedOptions", 274 + dx, 77, 138, 28);
             TryNotebookControlRect("AdvancedUseDefault", 287 + dx, 120, 125, 28);
             TryNotebookControlRect("AdvancedCheckUpdates", 18, 173, 177, 32);
+            TryNotebookControlRect("AdvancedPluginCheck", 205 + dx, 173, 207, 32);
             TryNotebookControlRect("AdvancedMappingVersion", 18, 219 + dy, 394 + dx, 22);
             TryNotebookControlRect("AdvancedFooter", 18, 246 + dy, 394 + dx, 30);
 
-            // Update: available height goes to the scrollable patch-notes list.
+            // Plugin Update: separately gated by GitHub's *plugin* version.
+            if (viewHasPluginUpdateTab)
+            {
+                TryNotebookControlRect("PluginUpdateHeader", 18, 16, 394 + dx, 27);
+                TryNotebookControlRect("PluginUpdateInstalled", 18, 53, 190 + split, 21);
+                TryNotebookControlRect("PluginUpdateAvailable", 224 + split, 53, 188 + dx - split, 21);
+                TryNotebookControlRect("PluginUpdateNotesHeader", 18, 88, 394 + dx, 20);
+                int notesWidth = 394 + dx;
+                if (TryNotebookControlRect("PluginUpdateNotes", 18, 114, notesWidth, 106 + dy) &&
+                    pluginUpdateNotes != null)
+                {
+                    var set = pluginUpdateNotes.GetType().GetMethod("SetColumnWidth",
+                        new[] { typeof(int), typeof(int) });
+                    if (set != null) try { set.Invoke(pluginUpdateNotes,
+                        new object[] { 0, Math.Max(100, notesWidth - 22) }); } catch { }
+                }
+                TryNotebookControlRect("PluginUpdateInfo", 18, 227 + dy, 394 + dx, 20);
+                TryNotebookControlRect("PluginUpdateStatus", 18, 246 + dy, 394 + dx, 20);
+                TryNotebookControlRect("PluginUpdateButton", 18, 268 + dy, 394 + dx, 31);
+                ResizeButtonArtwork("PluginUpdateButton", 394 + dx, 31);
+            }
+
+            // Mapping Update: available height goes to the scrollable patch-notes list.
             if (viewHasUpdateTab)
             {
                 TryNotebookControlRect("UpdateHeader", 18, 16, 394 + dx, 27);
@@ -1622,8 +1801,9 @@ namespace ACCustoms
                     string previous = SelectedOfficialTheme() != null
                         ? SelectedOfficialTheme().Name : null;
                     string previousLocal = IsLibraryLocalSelection() ? SelectedLibraryFile() : null;
-                    availableThemes.Clear();
-                    availableThemes.AddRange(list);
+                    allGithubThemes.Clear();
+                    allGithubThemes.AddRange(list);
+                    RefilterOfficialThemes();
                     themeCatalogReady = true;
                     selectedOfficialTheme = -1;
                     if (!String.IsNullOrEmpty(previous))
@@ -1725,7 +1905,8 @@ namespace ACCustoms
                 HudStaticText state = (HudStaticText)row[1];
                 label.Text = (active ? "> " : "") +
                     Shorten(System.IO.Path.GetFileNameWithoutExtension(item.Name), active ? 24 : 26);
-                state.Text = active ? "ACTIVE" : ThemeLibraryService.State(item);
+                state.Text = active ? "ACTIVE" : IsActiveThemeSource(path) ?
+                    "ACTIVE / Rebuild" : ThemeLibraryService.State(item);
                 TrySetColor(label, active ? UiGreen :
                     selectedLibraryRow == themesList.RowCount - 1 ? UiGold : UiBodyText);
                 TrySetColor(state, active ? UiGreen : state.Text == "Update available" ? UiGold :
@@ -1739,7 +1920,10 @@ namespace ACCustoms
                 HudStaticText state = (HudStaticText)row[1];
                 label.Text = (active ? "> " : "") +
                     Shorten(System.IO.Path.GetFileNameWithoutExtension(file), active ? 24 : 26);
-                state.Text = active ? "ACTIVE" : IsCacheReady(file) ? "Local / Ready" : "Local / Generate";
+                state.Text = !File.Exists(file) ? "Local / Missing" :
+                    active ? "ACTIVE" : IsActiveThemeSource(file) ? "ACTIVE / Rebuild" :
+                    (IsManagedLocalCopy(file) ? "Copy / " : "Linked / ") +
+                    (IsCacheReady(file) ? "Ready" : "Generate");
                 TrySetColor(label, active ? UiGreen :
                     selectedLibraryRow == themesList.RowCount - 1 ? UiGold : UiBodyText);
                 TrySetColor(state, active ? UiGreen : UiMuted);
@@ -1755,7 +1939,7 @@ namespace ACCustoms
             bool cached = IsCacheReady(file);
             if (themesStatus != null)
             {
-                themesStatus.Text = Shorten(themesFeedback, 69);
+                themesStatus.Text = Shorten(themesFeedback, hiddenOfficialThemes.Count > 0 ? 42 : 69);
                 TrySetColor(themesStatus, CountThemeUpdates() > 0 ? UiGold : UiBodyText);
             }
             bool busy;
@@ -1764,14 +1948,22 @@ namespace ACCustoms
                 selected == null ? "Download" :
                 ThemeLibraryService.State(selected) == "Not installed" ? "Download" :
                 ThemeLibraryService.State(selected) == "Update available" ? "Update PNG" : "Installed");
-            ChangeButtonArtworkText("ThemesUse", busy ? "Working..." :
-                active ? "Active" : file == null ? "Install & Apply" :
-                cached ? "Apply Theme" : "Generate Textures");
-            TrySetVvsVisibility(themesInstall,
-                selected != null && !busy && ThemeLibraryService.State(selected) != "Installed");
+            bool building = IsTemplateBuildRunning();
+            bool fileAvailable = !String.IsNullOrEmpty(file) && File.Exists(file);
+            string officialState = selected == null ? String.Empty : ThemeLibraryService.State(selected);
+            bool needsDownload = officialState == "Not installed";
+            bool updateAvailable = officialState == "Update available";
+            ChangeButtonArtworkText("ThemesUse", busy || building ? "Working..." :
+                updateAvailable ? "Update & Apply" : active ? "Active" :
+                file == null ? "Get & Apply" : cached ? "Apply" : "Build & Apply");
+            TrySetVvsVisibility(themesInstall, needsDownload && !busy && !building);
+            TrySetVvsVisibility(themesRebuild, fileAvailable && !busy && !building);
+            TrySetVvsVisibility(themesRemove,
+                (IsLibraryLocalSelection() || selected != null) && !busy && !building);
+            TrySetVvsVisibility(themesRestoreHidden, hiddenOfficialThemes.Count > 0);
             TrySetVvsVisibility(themesUse,
-                (IsLibraryLocalSelection() || selected != null) && !busy &&
-                !IsTemplateBuildRunning() && !active);
+                (IsLibraryLocalSelection() || selected != null) && !busy && !building &&
+                (!active || updateAvailable));
         }
 
         private bool IsOfficialThemeActive(GithubThemeItem item)
@@ -1789,15 +1981,145 @@ namespace ACCustoms
             string name = row < availableThemes.Count ? availableThemes[row].Name :
                 System.IO.Path.GetFileName(localThemeFiles[row - availableThemes.Count]);
             themesFeedback = System.IO.Path.GetFileNameWithoutExtension(name) + ": " +
-                (IsThemeFileActive(file) ? "Active" : file == null ? "Not installed" :
-                IsCacheReady(file) ? "Ready to apply" : "Generate textures to apply");
+                (IsThemeFileActive(file) ? "Active" : IsActiveThemeSource(file) ?
+                "Artwork changed. Click Rebuild." : file == null ? "Not installed" :
+                !File.Exists(file) ? "Source PNG missing" :
+                IsCacheReady(file) ? "Ready to apply" : "Click Rebuild or Build & Apply");
             RefreshThemesTab();
         }
 
         private void ThemesRefresh_MouseEvent(object sender, ControlMouseEventArgs e)
         {
-            if (e.EventType == ControlMouseEventArgs.MouseEventType.MouseHit)
-                BeginThemeCatalogCheck(true);
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
+            string previousLocal = IsLibraryLocalSelection() ? SelectedLibraryFile() : null;
+            ReloadLocalThemes();
+            if (previousLocal != null)
+            {
+                int index = localThemeFiles.FindIndex(f => String.Equals(f, previousLocal,
+                    StringComparison.OrdinalIgnoreCase));
+                selectedLibraryRow = index >= 0 ? availableThemes.Count + index : -1;
+            }
+            themesFeedback = "Refreshing library and checking artwork changes...";
+            RefreshThemesTab();
+            BeginThemeCatalogCheck(true);
+        }
+
+        private void ThemesRebuild_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
+                IsTemplateBuildRunning()) return;
+            string file = SelectedLibraryFile();
+            if (String.IsNullOrEmpty(file) || !File.Exists(file))
+            {
+                themesFeedback = "Source PNG is missing. Re-add it or remove this entry.";
+                RefreshThemesTab();
+                return;
+            }
+            try
+            {
+                ThemeLibraryService.ValidatePng(file);
+                SelectThemePng(file);
+                // Changed source hashes get a fresh immutable output directory.
+                // An active native replacement directory is never overwritten.
+                BeginTemplateBuild(true);
+                themesFeedback = "Checking artwork and rebuilding if changed...";
+                RefreshThemesTab();
+            }
+            catch (Exception ex)
+            {
+                themesFeedback = "Rebuild failed: " + Shorten(ex.Message, 64);
+                RefreshThemesTab();
+            }
+        }
+
+        private void ThemesRemove_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
+                IsTemplateBuildRunning()) return;
+            lock (themeWorkerLock)
+                if (themeInstallRunning || themeInstallPending) return;
+            string file = SelectedLibraryFile();
+            bool local = IsLibraryLocalSelection();
+            GithubThemeItem official = local ? null : SelectedOfficialTheme();
+            if (!local && official == null) return;
+            if (IsActiveThemeSource(file) || IsThemeFileActive(file))
+            {
+                themesFeedback = "Switch themes or Restore Classic UI before removing this one.";
+                RefreshThemesTab();
+                return;
+            }
+            string display = local ? System.IO.Path.GetFileName(file) : official.Name;
+            bool managedCopy = local && IsManagedLocalCopy(file);
+            string explanation = local
+                ? managedCopy
+                    ? "This deletes the legacy PNG copy in AC Customs' Local folder."
+                    : "This unlinks the theme. Your original PNG will NOT be deleted."
+                : "This hides the GitHub theme from your library and removes its downloaded PNG. " +
+                  "Use Restore Hidden to show it again. Any edits to the downloaded copy will be lost.";
+            if (System.Windows.Forms.MessageBox.Show(
+                "Remove '" + display + "' from your library?\r\n\r\n" + explanation,
+                "AC Customs - Remove Theme", System.Windows.Forms.MessageBoxButtons.YesNo,
+                System.Windows.Forms.MessageBoxIcon.Warning,
+                System.Windows.Forms.MessageBoxDefaultButton.Button2) !=
+                System.Windows.Forms.DialogResult.Yes) return;
+            try
+            {
+                if (local)
+                {
+                    if (managedCopy && File.Exists(file)) File.Delete(file);
+                    UnlinkLocalSource(file);
+                    ReloadLocalThemes();
+                }
+                else
+                {
+                    string installed = ThemeLibraryService.ThemePath(official);
+                    if (File.Exists(installed)) File.Delete(installed);
+                    string marker = installed + ".githubsha";
+                    if (File.Exists(marker)) File.Delete(marker);
+                    hiddenOfficialThemes.Add(official.Name);
+                    SaveHiddenOfficialThemes();
+                    RefilterOfficialThemes();
+                }
+                if (String.Equals(selectedTemplatePng, file, StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedTemplatePng = String.Empty;
+                    if (File.Exists(TemplateSourceSettingsPath)) File.Delete(TemplateSourceSettingsPath);
+                }
+                selectedOfficialTheme = availableThemes.Count > 0 ? 0 : -1;
+                selectedLibraryRow = selectedOfficialTheme >= 0 ? selectedOfficialTheme :
+                    localThemeFiles.Count > 0 ? 0 : -1;
+                themesFeedback = display + " removed from your library.";
+                RefreshTemplateStatus();
+                RefreshThemesTab();
+            }
+            catch (Exception ex)
+            {
+                themesFeedback = "Remove failed: " + Shorten(ex.Message, 73);
+                RefreshThemesTab();
+            }
+        }
+
+        private void ThemesRestoreHidden_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit ||
+                hiddenOfficialThemes.Count == 0) return;
+            try
+            {
+                hiddenOfficialThemes.Clear();
+                SaveHiddenOfficialThemes();
+                RefilterOfficialThemes();
+                selectedOfficialTheme = availableThemes.Count > 0 ? 0 : -1;
+                selectedLibraryRow = selectedOfficialTheme >= 0 ? selectedOfficialTheme :
+                    localThemeFiles.Count > 0 ? 0 : -1;
+                themesFeedback = "Hidden community themes restored.";
+                RefreshThemesTab();
+                if (!themeCatalogReady) BeginThemeCatalogCheck(true);
+            }
+            catch (Exception ex)
+            {
+                themesFeedback = "Could not restore hidden themes: " + Shorten(ex.Message, 59);
+                RefreshThemesTab();
+            }
         }
 
         private void ThemesInstall_MouseEvent(object sender, ControlMouseEventArgs e)
@@ -1850,6 +2172,12 @@ namespace ACCustoms
         {
             if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
             if (IsTemplateBuildRunning()) return;
+            if (!IsLibraryLocalSelection() && SelectedOfficialTheme() != null &&
+                ThemeLibraryService.State(SelectedOfficialTheme()) == "Update available")
+            {
+                BeginOfficialThemeInstall(true);
+                return;
+            }
             string file = SelectedLibraryFile();
             if (file != null)
             {
@@ -1858,10 +2186,9 @@ namespace ACCustoms
                 {
                     ThemeLibraryService.ValidatePng(file);
                     SelectThemePng(file);
-                    // First click on an uncached theme only generates textures.
-                    // Second click applies; cached themes switch immediately.
+                    // One click for uncached/edited PNGs: compile then apply.
                     if (IsCacheReady(file)) ApplyGeneratedTemplate_Click();
-                    else BeginTemplateBuild(false);
+                    else BeginTemplateBuild(true);
                     themesFeedback = status;
                 }
                 catch (Exception ex) { themesFeedback = "Theme error: " + Shorten(ex.Message, 75); }
@@ -2572,6 +2899,9 @@ namespace ACCustoms
                     return;
                 }
                 ApplyInstalledPack(generated);
+                if (String.Equals(activePackInstallId, generated.InstallId, StringComparison.Ordinal) &&
+                    nativeReady && NativeBridge.GetActiveMode() == 1)
+                    activeThemeSourcePath = System.IO.Path.GetFullPath(selectedTemplatePng);
             }
             catch (Exception ex) { SetStatus("Apply theme error: " + ex.Message); }
         }
@@ -2650,6 +2980,7 @@ namespace ACCustoms
 
             activePackInstallId = String.Empty;
             activeThemeDisplayName = String.Empty;
+            activeThemeSourcePath = String.Empty;
             if (resetToEmptyDirectory)
                 NativeBridge.SetReplacementDirectory(PackManager.EmptyThemeDirectory);
 
@@ -2793,12 +3124,14 @@ namespace ACCustoms
             // UI step between already-cached themes.
             string previousId = activePackInstallId;
             string previousDisplay = activeThemeDisplayName;
+            string previousSource = activeThemeSourcePath;
             SetStatus("Switching to " + selected.Name + "...");
             bool ok = NativeBridge.SwitchTheme(selected.TexturesDirectory);
             if (ok && NativeBridge.GetActiveMode() == 1)
             {
                 activePackInstallId = selected.InstallId;
                 activeThemeDisplayName = selected.Name;
+                activeThemeSourcePath = String.Empty;
                 PackManager.SaveLastSelectedInstallId(selected.InstallId);
                 SetStatus(selected.Name + " applied.");
             }
@@ -2810,11 +3143,13 @@ namespace ACCustoms
                 {
                     activePackInstallId = previousId;
                     activeThemeDisplayName = previousDisplay;
+                    activeThemeSourcePath = previousSource;
                 }
                 else
                 {
                     activePackInstallId = String.Empty;
                     activeThemeDisplayName = String.Empty;
+                    activeThemeSourcePath = String.Empty;
                 }
                 SetStatus("Theme switch failed. " +
                     (NativeBridge.GetActiveMode() == 1 ? "Previous theme retained." : "Default UI restored."));

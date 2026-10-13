@@ -82,6 +82,13 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Resource compilation failed with exit code $LASTEXITCODE." }
     } finally { Pop-Location }
 
+    # Compile the external helper first. The managed DLL embeds this EXE as a
+    # resource, so end users continue to install only the two plugin DLLs.
+    $updaterProject = Join-Path $root 'plugin\updater\ACCustoms.Updater.csproj'
+    Write-Host 'Building embedded post-exit DLL updater...'
+    & $msbuild $updaterProject '/t:Rebuild' '/p:Configuration=Release' '/p:Platform=x86'
+    if ($LASTEXITCODE -ne 0) { throw "Embedded updater build failed ($LASTEXITCODE)." }
+
     $buildArguments = @($project, '/t:Rebuild', '/p:Configuration=Release', '/p:Platform=x86',
         ('/p:DecalDir=' + (Split-Path -Parent $decal)),
         ('/p:VvsDir=' + (Split-Path -Parent $vvs)), '/m')

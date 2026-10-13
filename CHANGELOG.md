@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0.0 — In-game automatic plugin updates
+
+- New **Update** tab is visible only if the published GitHub plugin version is newer than the installed assembly.
+- Added manual **Check Plugin Version** control in Advanced; mapping updates remain independent.
+- Download `ACCustoms.dll` and `ACCustoms.Native.dll` with SHA-256/size verification.
+- Embed an external helper in `ACCustoms.dll` to install both DLLs safely after AC exits.
+- Generate release manifests and versioned GitHub assets with `scripts/publish_plugin_release.ps1`.
+- Continue previous Theme Library Add Local, Remove, and Rebuild changes in this source bundle.
+
+
 ## Unreleased — VVS interface
 
 - Move the in-game window and controls to Virindi View Service; VVS is now required.

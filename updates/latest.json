@@ -1,0 +1,20 @@
+{
+    "version":  "1.4.0.0",
+    "changelog":  [
+                      "One-click plugin updates inside Asheron\u0027s Call",
+                      "New Update tab appears only when a newer plugin is available",
+                      "Verified downloads; automatic install after exiting the game"
+                  ],
+    "files":  {
+                  "ACCustoms.dll":  "releases/v1.4.0.0/ACCustoms.dll",
+                  "ACCustoms.Native.dll":  "releases/v1.4.0.0/ACCustoms.Native.dll"
+              },
+    "sha256":  {
+                   "ACCustoms.dll":  "3A3927743024654EFA3D0226451F5FD31B6C2B2F93D850AAF0BD47630B017B95",
+                   "ACCustoms.Native.dll":  "00EE22B2455D30F96D11F11777FB96DFE1661D442934663CE81FE93819E047D3"
+               },
+    "bytes":  {
+                  "ACCustoms.dll":  208384,
+                  "ACCustoms.Native.dll":  623616
+              }
+}
