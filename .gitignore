@@ -23,6 +23,7 @@ x64/
 
 # Repository build output
 artifacts/
+.venv/
 
 # Local build discovery/cache
 .build_decal_adapter_path.txt
