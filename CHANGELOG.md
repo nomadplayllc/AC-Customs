@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.0.0 — Auto Apply and smoother texture switching
+
+- Added **Auto Apply On Login** in Advanced, off by default. Remembers the last successfully applied PNG theme and starts applying it after `LoginComplete` with no fixed delay.
+- Added a frame-sliced texture swap queue (up to **3 textures per rendered frame**, with the existing soft 4 ms budget), preventing overlapping theme changes.
+- Added a smooth, text-free blue progress bar on Browse that appears only while applying or restoring a theme.
+- Supports switching between themes, restoring Classic UI, and relogging using the queue; completion updates the last successfully used theme.
+- Retained targeted crash-loop protection for interrupted automatic swaps and terminating managed exceptions. Normal Alt+F4 and window close are not interpreted as crashes after a completed swap.
+- Kept the experimental early-login texture trigger out of this release. Auto Apply begins after the character finishes entering the world.
+
+
 ## 1.4.0.0 — In-game automatic plugin updates
 
 - New **Update** tab is visible only if the published GitHub plugin version is newer than the installed assembly.

@@ -2,7 +2,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 
 [assembly: AssemblyTitle("AC Customs")]
-[assembly: AssemblyDescription("Decal proof-of-concept front-end for AC Customs")]
+[assembly: AssemblyDescription("Asheron's Call PNG UI themes and texture customization")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
 [assembly: AssemblyProduct("AC Customs")]
@@ -11,5 +11,5 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCulture("")]
 [assembly: ComVisible(true)]
 [assembly: Guid("6d2de3a2-b2c3-469d-91de-fcb19a3436d0")]
-[assembly: AssemblyVersion("1.4.0.0")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]

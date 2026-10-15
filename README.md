@@ -1,6 +1,6 @@
 # AC Customs
 
-AC Customs is an open-source UI customization system for the 32-bit Asheron's Call client. It combines a Decal plugin, a native texture/runtime hook layer, and a standalone UI Manager for browsing client textures, building `.acui` packs, and editing the interface with a live snapshot/mirror workflow.
+AC Customs is an open-source UI customization system for the 32-bit Asheron's Call client. It combines a Decal plugin and a native texture/runtime hook layer for PNG-based UI themes, plus an optional standalone UI Manager for advanced texture editing and development.
 
 Project site: https://ac-customs.mrgrid.chatgpt.site/
 
@@ -23,8 +23,11 @@ Template Editor and editable ACUI pack-to-PNG export instructions: [Master Templ
 
 ## What AC Customs does
 
-- Applies and restores UI texture replacement packs at runtime.
-- Imports/exports the dependency-free `.acui` pack format.
+- Lets players browse, download, import, rebuild and apply PNG UI themes in the VVS plugin.
+- Lets creators edit a single 2000 × 2000 PNG template and generate the associated texture cache.
+- Optionally reapplies the previously used theme after character login, with interrupted-apply recovery.
+- Applies/restores textures gradually (up to three per rendered frame), with an in-plugin progress bar.
+- Retains `.acui` pack support for older/advanced workflows.
 - Reads texture metadata and preview pixels directly from `client_portal.dat` in the current Manager.
 - Stores user/runtime data under `%LOCALAPPDATA%\ACCustoms` rather than in the source tree.
 - Captures and replays the live UI scene through a local named-pipe bridge.
@@ -69,7 +72,7 @@ See [docs/BUILDING.md](docs/BUILDING.md) for component-by-component instructions
 
 AC Customs now requires **Virindi View Service (VVS)**. Install the Virindi Plugin Bundle and enable **Virindi View Service** under Decal's Services, then restart AC. Open AC Customs from the VVS bar.
 
-The window, pack selector, and Import / Apply / Restore buttons use VVS. Decal's **Disable View Rendering** option can remain checked. There is no fallback to native Decal windows. The standalone UI Manager does not require VVS.
+The Browse, Share and Advanced tabs use VVS. Browse has the theme library, Apply and Restore Classic UI; Advanced includes the opt-in Auto Apply On Login toggle. Decal's **Disable View Rendering** option can remain checked. There is no fallback to native Decal windows. The standalone UI Manager does not require VVS.
 
 ## Runtime data
 

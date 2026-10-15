@@ -16,6 +16,9 @@ namespace ACCustoms
     public sealed partial class PluginCore : PluginBase
     {
         private static readonly TimeSpan ApplyCooldown = TimeSpan.FromSeconds(3);
+        // Defer auto-apply out of LoginComplete to the next render callback.
+        // No time-based login delay is needed. Exactly one attempt is scheduled
+        // per LoginComplete, preserving the existing queue/cooldown guards.
         // One palette for the MAIN window AND the MAPPING UPDATE window.
         // Never duplicate ARGB literals across the two appearance methods.
         private static readonly Color UiBackground = Color.FromArgb(255, 13, 20, 30);
@@ -87,6 +90,20 @@ namespace ACCustoms
         private string uploadFeedback = "Select a PNG to prepare a submission.";
         private HudList themesList;
         private HudStaticText themesHeader, themesIntro, themesStatus;
+        // Native VVS layouts, created at runtime after XML parsing. This avoids
+        // adding unverified progress controls to the embedded notebook XML.
+        // Draw track AND fill into one image: VVS may paint overlapping layouts
+        // in an order that hides the fill regardless of its measured width.
+        private HudFixedLayout themeProgressPage, themeProgressBar;
+        private bool themeProgressInitFailed;
+        private bool themeProgressIsShowing;
+        private int themeProgressLastPercent = -1;
+        private int themeProgressLastTrackWidth = -1;
+        private int themeProgressLastY = -1;
+        // Cache a maximum of 101 compact bitmaps per window width; re-use on
+        // subsequent swaps and retain them until VVS window disposal.
+        private readonly Dictionary<long, Bitmap> themeProgressBitmaps =
+            new Dictionary<long, Bitmap>();
         private HudButton themesRefresh, themesInstall, themesUse;
         private HudButton themesAddLocal, themesRemove, themesRebuild, themesRestoreHidden;
         private readonly List<string> localThemeFiles = new List<string>();
@@ -135,6 +152,201 @@ namespace ACCustoms
             var names = new List<string>(hiddenOfficialThemes);
             names.Sort(StringComparer.OrdinalIgnoreCase);
             WriteRegistry(HiddenOfficialRegistry, names);
+        }
+
+        // Only a positively reported terminating managed exception disables
+        // Auto Apply outside an active swap. Normal window closes (Alt+F4 / X)
+        // are not evidence of a crash: AC/Decal may bypass plugin Shutdown.
+        // This handler intentionally performs file I/O only, no VVS or native
+        // renderer operations, since it can run on a failing CLR thread.
+        private void AutoApplyUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            if (!e.IsTerminating || !autoApplyOnLogin) return;
+            try
+            {
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(AutoApplySettingsPath));
+                File.WriteAllText(AutoApplySettingsPath, "0");
+                autoApplyOnLogin = false;
+                AppendMappingUpdateLog("AUTO-APPLY disabled after a terminating managed exception.");
+            }
+            catch
+            {
+                // The process is already terminating; do not throw from a
+                // last-chance exception handler or attempt to touch the UI.
+            }
+        }
+
+        private void LoadAutoApplySettings()
+        {
+            autoApplyOnLogin = false; // Opt in only, never default to enabled.
+            try
+            {
+                autoApplyOnLogin = File.Exists(AutoApplySettingsPath) &&
+                    File.ReadAllText(AutoApplySettingsPath).Trim() == "1";
+                if (File.Exists(LastAppliedThemePath))
+                {
+                    string stored = File.ReadAllText(LastAppliedThemePath).Trim();
+                    if (System.IO.Path.IsPathRooted(stored) &&
+                        String.Equals(System.IO.Path.GetExtension(stored), ".png",
+                            StringComparison.OrdinalIgnoreCase))
+                        lastAppliedThemePng = System.IO.Path.GetFullPath(stored);
+                }
+            }
+            catch (Exception ex)
+            {
+                autoApplyOnLogin = false;
+                AppendMappingUpdateLog("AUTO-APPLY settings read failed: " + ex.Message);
+            }
+            // A marker left by the previous process means it exited during an
+            // auto-apply attempt. Fail closed even if the settings file is corrupt.
+            if (File.Exists(AutoApplyCrashMarkerPath))
+            {
+                autoApplyOnLogin = false;
+                autoApplyRecoveredFromCrash = true;
+                try
+                {
+                    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(AutoApplySettingsPath));
+                    File.WriteAllText(AutoApplySettingsPath, "0");
+                    File.Delete(AutoApplyCrashMarkerPath);
+                }
+                catch (Exception ex)
+                {
+                    AppendMappingUpdateLog("AUTO-APPLY crash guard cleanup: " + ex.Message);
+                }
+                AppendMappingUpdateLog("AUTO-APPLY disabled: previous attempt did not finish.");
+            }
+        }
+
+        private void RefreshAutoApplyToggle()
+        {
+            // Artwork owns the visible caption. Assigning HudButton.Text here
+            // would draw a second, skin-colored label over the bitmap.
+            ChangeButtonArtworkText("AdvancedAutoApplyToggle", autoApplyOnLogin ? "ON" : "OFF");
+        }
+
+        private void AdvancedAutoApplyToggle_MouseEvent(object sender, ControlMouseEventArgs e)
+        {
+            if (e.EventType != ControlMouseEventArgs.MouseEventType.MouseHit) return;
+            try
+            {
+                bool enabled = !autoApplyOnLogin;
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(AutoApplySettingsPath));
+                File.WriteAllText(AutoApplySettingsPath, enabled ? "1" : "0");
+                autoApplyOnLogin = enabled;
+                if (!enabled) autoApplyAfterLoginUtc = DateTime.MaxValue;
+                RefreshAutoApplyToggle();
+                SetStatus(!enabled ? "Auto Apply On Login disabled." :
+                    String.IsNullOrWhiteSpace(lastAppliedThemePng)
+                    ? "Auto Apply enabled. Apply a theme once to remember it."
+                    : "Auto Apply enabled for the next character login.");
+                AppendMappingUpdateLog("AUTO-APPLY setting " + (enabled ? "ON" : "OFF"));
+            }
+            catch (Exception ex) { SetStatus("Could not save Auto Apply setting: " + ex.Message); }
+        }
+
+        private void DisableAutoApplyAfterFailure()
+        {
+            autoApplyOnLogin = false;
+            autoApplyAfterLoginUtc = DateTime.MaxValue;
+            try
+            {
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(AutoApplySettingsPath));
+                File.WriteAllText(AutoApplySettingsPath, "0");
+            }
+            catch (Exception ex)
+            {
+                AppendMappingUpdateLog("AUTO-APPLY could not persist OFF after failure: " + ex.Message);
+            }
+            RefreshAutoApplyToggle();
+        }
+
+        private void RememberSuccessfullyAppliedPng(string file)
+        {
+            try
+            {
+                string source = System.IO.Path.GetFullPath(file);
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(LastAppliedThemePath));
+                File.WriteAllText(LastAppliedThemePath, source);
+                lastAppliedThemePng = source;
+            }
+            catch (Exception ex)
+            {
+                AppendMappingUpdateLog("AUTO-APPLY could not remember applied PNG: " + ex.Message);
+            }
+        }
+
+        private void TryAutoApplyAfterLogin()
+        {
+            if (!autoApplyOnLogin || !nativeReady || updateShuttingDown) return;
+            string file = lastAppliedThemePng;
+            if (String.IsNullOrWhiteSpace(file) || !File.Exists(file))
+            {
+                SetStatus("Auto Apply skipped: no previously applied theme file found.");
+                AppendMappingUpdateLog("AUTO-APPLY skipped: previous PNG missing.");
+                return;
+            }
+            if (IsTemplateBuildRunning())
+            {
+                SetStatus("Auto Apply skipped: texture generation is running.");
+                return;
+            }
+            // A queued manual theme change or the existing Apply cooldown
+            // should delay auto-apply, not disable it as a false failure.
+            if (NativeBridge.IsThemeQueueBusy())
+            {
+                autoApplyAfterLoginUtc = DateTime.UtcNow.AddSeconds(1);
+                return;
+            }
+            if (DateTime.UtcNow - lastChangeUtc < ApplyCooldown)
+            {
+                autoApplyAfterLoginUtc = lastChangeUtc.Add(ApplyCooldown).AddMilliseconds(50);
+                return;
+            }
+            try
+            {
+                ThemeLibraryService.ValidatePng(file);
+                // Never generate textures, download files or swap mappings as a
+                // side effect of login. Only activate a fully validated cache.
+                if (!IsCacheReady(file))
+                {
+                    SetStatus("Auto Apply skipped: rebuild the last theme's textures manually.");
+                    AppendMappingUpdateLog("AUTO-APPLY skipped: cache is missing or stale for " + file);
+                    return;
+                }
+                // Failure to create the crash marker MUST prevent native Apply.
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(AutoApplyCrashMarkerPath));
+                File.WriteAllText(AutoApplyCrashMarkerPath, file);
+                applyingLoginTheme = true;
+                try
+                {
+                    SelectThemePng(file);
+                    bool applied = ApplyGeneratedTemplate_Click();
+                    AppendMappingUpdateLog("AUTO-APPLY " + (applied ? "queued: " : "enqueue failed: ") +
+                        file + (applied ? String.Empty : " / " + status));
+                    if (!applied)
+                    {
+                        DisableAutoApplyAfterFailure();
+                        SetStatus("Auto Apply failed and was disabled. See mapping-update.log.");
+                    }
+                }
+                finally
+                {
+                    applyingLoginTheme = false;
+                    // Keep the crash marker in place while the queue runs.
+                    // FinishQueuedThemeIfReady removes it only on completion.
+                    if (!queuedAutoApply)
+                    {
+                        try { File.Delete(AutoApplyCrashMarkerPath); }
+                        catch (Exception ex) { AppendMappingUpdateLog("AUTO-APPLY marker cleanup: " + ex.Message); }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DisableAutoApplyAfterFailure();
+                SetStatus("Auto Apply disabled: " + Shorten(ex.Message, 55));
+                AppendMappingUpdateLog("AUTO-APPLY exception: " + ex);
+            }
         }
 
         private void ReloadLocalThemes()
@@ -276,6 +488,26 @@ namespace ACCustoms
         private string templateDownloadFeedback = "Official 2000 x 2000 PNG template.";
 
         private HudButton AdvancedUseDefault;
+        private HudStaticText AdvancedAutoApplyLabel;
+        private HudButton AdvancedAutoApplyToggle;
+        private bool autoApplyOnLogin;
+        private bool autoApplyRecoveredFromCrash;
+        private bool applyingLoginTheme;
+        private bool themeNeedsLoginRefresh;
+        private DateTime autoApplyAfterLoginUtc = DateTime.MaxValue;
+        private string lastAppliedThemePng = String.Empty;
+        private static readonly string AutoApplySettingsPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ACCustoms", "auto-apply-on-login.txt");
+        private static readonly string LastAppliedThemePath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ACCustoms", "last-applied-theme.txt");
+        // Survives a native crash or forced process termination while auto
+        // applying. The next startup automatically disables the opt-in
+        // setting instead of entering an endless login crash loop.
+        private static readonly string AutoApplyCrashMarkerPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ACCustoms", "auto-apply-in-progress.txt");
         private HudStaticText AdvancedMappingLabel;
         private HudStaticText AdvancedMappingFile;
         private HudStaticText AdvancedMappingHint;
@@ -333,6 +565,13 @@ namespace ACCustoms
         // theme file does not change the name of the UI already active in AC.
         private string activeThemeDisplayName = String.Empty;
         private string activeThemeSourcePath = String.Empty;
+
+        // One in-flight native texture queue at a time. We commit active theme
+        // metadata and last-successful PNG only AFTER the queue finishes.
+        private InstalledPack queuedThemePack;
+        private string queuedThemeSourcePng = String.Empty;
+        private bool queuedThemeRestore;
+        private bool queuedAutoApply;
 
         private bool IsActiveThemeSource(string file)
         {
@@ -416,7 +655,9 @@ namespace ACCustoms
             try
             {
                 Core.RenderFrame += Core_RenderFrame;
+                AppDomain.CurrentDomain.UnhandledException += AutoApplyUnhandledException;
                 PackManager.EnsureDirectories();
+                LoadAutoApplySettings();
                 string mappingInstallError;
                 bool mappingInstalled = EnsureBundledMapping(out mappingInstallError);
                 try
@@ -455,7 +696,9 @@ namespace ACCustoms
                 RefreshInstalledPacks(PackManager.LoadLastSelectedInstallId());
                 UpdateCurrentUiText();
 
-                SetStatus(!mappingInstalled
+                SetStatus(autoApplyRecoveredFromCrash
+                    ? "Auto Apply disabled after interrupted login apply."
+                    : !mappingInstalled
                     ? "Bundled mapping error: " + mappingInstallError
                     : nativeReady ? BuildReadyStatus()
                     : "Native engine failed to initialize");
@@ -476,7 +719,9 @@ namespace ACCustoms
         protected override void Shutdown()
         {
             updateShuttingDown = true;
+            autoApplyAfterLoginUtc = DateTime.MaxValue;
             try { Core.RenderFrame -= Core_RenderFrame; } catch { }
+            try { AppDomain.CurrentDomain.UnhandledException -= AutoApplyUnhandledException; } catch { }
             try { DisposeView(); } catch { }
             try { NativeBridge.Shutdown(); } catch { }
         }
@@ -543,8 +788,15 @@ namespace ACCustoms
             {
                 // The same client process can create a new UI desktop after
                 // logout/login. Relearn its native UI roots before Apply/Restore.
-                if (nativeReady && !NativeBridge.NotifyLoginComplete())
+                autoApplyAfterLoginUtc = DateTime.MaxValue;
+                bool loginReady = nativeReady && NativeBridge.NotifyLoginComplete();
+                if (loginReady) themeNeedsLoginRefresh = true;
+                if (nativeReady && !loginReady)
                     Host.Actions.AddChatText("AC Customs: failed to refresh UI discovery after login.", 3);
+                // Apply at the next RenderFrame, not inside LoginComplete.
+                // Native refresh is already notified above. No fixed delay.
+                if (loginReady && autoApplyOnLogin)
+                    autoApplyAfterLoginUtc = DateTime.UtcNow;
 
                 if (view == null)
                     Host.Actions.AddChatText("AC Customs: waiting for its VVS window. Ensure Virindi View Service is installed and enabled in Decal Services; restart AC after enabling it.", 3);
@@ -661,6 +913,12 @@ namespace ACCustoms
 
         private bool BeginChange()
         {
+            if (queuedThemePack != null || queuedThemeRestore ||
+                (nativeReady && NativeBridge.IsThemeQueueBusy()))
+            {
+                SetStatus("Theme textures are still being swapped. Please wait.");
+                return false;
+            }
             DateTime now = DateTime.UtcNow;
             TimeSpan elapsed = now - lastChangeUtc;
             if (elapsed < ApplyCooldown)
@@ -734,6 +992,8 @@ namespace ACCustoms
             BrowseTemplate = null;
             AdvancedOptions = (HudButton)view["AdvancedOptions"];
             AdvancedUseDefault = (HudButton)view["AdvancedUseDefault"];
+            AdvancedAutoApplyLabel = (HudStaticText)view["AdvancedAutoApplyLabel"];
+            AdvancedAutoApplyToggle = (HudButton)view["AdvancedAutoApplyToggle"];
             AdvancedMappingLabel = (HudStaticText)view["AdvancedMappingLabel"];
             AdvancedMappingFile = (HudStaticText)view["AdvancedMappingFile"];
             AdvancedMappingHint = (HudStaticText)view["AdvancedMappingHint"];
@@ -788,6 +1048,7 @@ namespace ACCustoms
             ImportPack = null;
             AdvancedOptions.MouseEvent += AdvancedOptions_MouseEvent;
             AdvancedUseDefault.MouseEvent += AdvancedUseDefault_MouseEvent;
+            AdvancedAutoApplyToggle.MouseEvent += AdvancedAutoApplyToggle_MouseEvent;
             RestoreVanilla.MouseEvent += RestoreVanilla_MouseEvent;
             AdvancedCheckUpdates.MouseEvent += AdvancedCheckUpdates_MouseEvent;
             advancedPluginCheck.MouseEvent += AdvancedPluginCheck_MouseEvent;
@@ -817,6 +1078,7 @@ namespace ACCustoms
                 updateDownloadButton.MouseEvent += UpdateDownload_MouseEvent;
             }
             ApplyModernAppearance();
+            RefreshAutoApplyToggle();
             RefreshMappingUpdateButton();
             RefreshAdvancedMappingInfo();
             if (viewHasUpdateTab) RefreshMappingUpdateWindow();
@@ -829,7 +1091,9 @@ namespace ACCustoms
             RefreshUploadTab();
             RefreshTemplateDownloadUi();
             UpdateCurrentUiText();
-            SetStatus(nativeReady ? BuildReadyStatus() : "Native engine failed to initialize");
+            SetStatus(autoApplyRecoveredFromCrash
+                ? "Auto Apply disabled after interrupted login apply."
+                : nativeReady ? BuildReadyStatus() : "Native engine failed to initialize");
         }
 
         private static bool TrySetColor(object target, Color color)
@@ -863,7 +1127,8 @@ namespace ACCustoms
             foreach (object heading in new object[] { AdvancedHeader, AdvancedMappingLabel,
                 UpdateHeader, UpdateNotesHeader, pluginUpdateHeader })
                 TrySetColor(heading, UiGold);
-            foreach (object info in new object[] { AdvancedInfo, AdvancedMappingVersion,
+            foreach (object info in new object[] { AdvancedAutoApplyLabel,
+                AdvancedInfo, AdvancedMappingVersion,
                 AdvancedFooter, AdvancedMappingFile, AdvancedMappingHint,
                 UpdateInstructions, updateInstalledText, pluginUpdateInstalled })
                 TrySetColor(info, UiMuted);
@@ -913,6 +1178,9 @@ namespace ACCustoms
                 UiAdvancedButton, 138, 28, 13, false);
             RegisterButtonArtwork("AdvancedUseDefault", AdvancedUseDefault, "Use Default",
                 UiAdvancedButton, 125, 28, 13, false);
+            RegisterButtonArtwork("AdvancedAutoApplyToggle", AdvancedAutoApplyToggle,
+                autoApplyOnLogin ? "ON" : "OFF",
+                UiAdvancedButton, 90, 28, 13, true);
             RegisterButtonArtwork("AdvancedCheckUpdates", AdvancedCheckUpdates, "Check Updates",
                 UiSecondaryButton, 177, 32, 13, true);
             RegisterButtonArtwork("AdvancedPluginCheck", advancedPluginCheck, "Check Plugin Version",
@@ -1124,6 +1392,7 @@ namespace ACCustoms
             if (BrowseTemplate != null) BrowseTemplate.MouseEvent -= BrowseTemplate_MouseEvent;
             if (AdvancedOptions != null) AdvancedOptions.MouseEvent -= AdvancedOptions_MouseEvent;
             if (AdvancedUseDefault != null) AdvancedUseDefault.MouseEvent -= AdvancedUseDefault_MouseEvent;
+            if (AdvancedAutoApplyToggle != null) AdvancedAutoApplyToggle.MouseEvent -= AdvancedAutoApplyToggle_MouseEvent;
             if (RefreshTemplate != null) RefreshTemplate.MouseEvent -= RefreshTemplate_MouseEvent;
             if (GenerateTemplate != null) GenerateTemplate.MouseEvent -= GenerateTemplate_MouseEvent;
             if (ApplyGeneratedTemplate != null) ApplyGeneratedTemplate.MouseEvent -= ApplyGeneratedTemplate_MouseEvent;
@@ -1143,7 +1412,8 @@ namespace ACCustoms
             myUiStatusImage = null;
             BrandTitle = BrandSubtitle = TemplateLabel = null;
             BrowseTemplate = RefreshTemplate = GenerateTemplate = ApplyGeneratedTemplate = AdvancedOptions = null;
-            AdvancedCheckUpdates = AdvancedUseDefault = null;
+            AdvancedCheckUpdates = AdvancedUseDefault = AdvancedAutoApplyToggle = null;
+            AdvancedAutoApplyLabel = null;
             advancedPluginCheck = null;
             pluginUpdateHeader = pluginUpdateInstalled = pluginUpdateAvailable = pluginUpdateStatus = null;
             pluginUpdateNotes = null;
@@ -1151,6 +1421,11 @@ namespace ACCustoms
             AdvancedMappingLabel = AdvancedMappingFile = AdvancedMappingHint = null;
             AdvancedHeader = AdvancedInfo = AdvancedMappingVersion = AdvancedFooter = null;
             themesHeader = themesIntro = themesStatus = null;
+            themeProgressPage = themeProgressBar = null;
+            themeProgressInitFailed = false;
+            themeProgressIsShowing = false;
+            themeProgressLastPercent = themeProgressLastTrackWidth = themeProgressLastY = -1;
+            themeProgressBitmaps.Clear(); // bitmaps are disposed in ownedButtonBitmaps below
             themesAddLocal = themesRemove = themesRebuild = themesRestoreHidden = null;
             themesList = null;
             themesRefresh = themesInstall = themesUse = null;
@@ -1163,15 +1438,249 @@ namespace ACCustoms
             updateOpenFolderButton = updateDownloadButton = null;
         }
 
+        // Draw one complete bar into one bitmap instead of layering two
+        // HudFixedLayouts. VVS versions/themes may paint an earlier child above
+        // a later child, so resizing a second "fill" control is unreliable.
+        private bool EnsureThemeProgressBar()
+        {
+            if (themeProgressBar != null) return true;
+            if (view == null || themeProgressInitFailed) return false;
+            try
+            {
+                HudFixedLayout page = view["ThemesPageLayout"] as HudFixedLayout;
+                if (page == null) return false; // lazy notebook page; retry
+
+                var bar = new HudFixedLayout();
+                bar.Image = new ACImage(Color.FromArgb(31, 47, 64));
+                // Start out of view, without introducing parser-dependent XML.
+                page.AddControl(bar, new Rectangle(1000, 293, 394, 14));
+                themeProgressPage = page;
+                themeProgressBar = bar;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                themeProgressInitFailed = true;
+                AppendMappingUpdateLog("THEME PROGRESS: optional VVS layout failed: " + ex);
+                return false;
+            }
+        }
+
+        // The bar bitmap is cached by pixel width + percent. Applying its Image
+        // through the same ACImage API used by our buttons requests a repaint,
+        // rather than relying on continuous SetControlRect width updates.
+        private Bitmap GetThemeProgressBitmap(int width, int percent)
+        {
+            long key = ((long)width << 8) | (uint)percent;
+            Bitmap existing;
+            if (themeProgressBitmaps.TryGetValue(key, out existing)) return existing;
+
+            Bitmap bitmap = new Bitmap(width, 14,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try
+            {
+                using (Graphics g = Graphics.FromImage(bitmap))
+                using (var track = new SolidBrush(Color.FromArgb(31, 47, 64)))
+                using (var fill = new SolidBrush(UiBlue))
+                using (var outline = new Pen(Color.FromArgb(91, 112, 131)))
+                {
+                    g.Clear(UiBackground);
+                    g.FillRectangle(track, 0, 0, width, 14);
+                    // Reserve one pixel on each side for a subtle border.
+                    int inside = Math.Max(1, width - 2);
+                    int fillWidth = (int)Math.Round(inside * percent / 100.0);
+                    if (fillWidth > 0)
+                        g.FillRectangle(fill, 1, 1, Math.Min(inside, fillWidth), 12);
+                    g.DrawRectangle(outline, 0, 0, width - 1, 13);
+                }
+                themeProgressBitmaps.Add(key, bitmap);
+                ownedButtonBitmaps.Add(bitmap);
+                return bitmap;
+            }
+            catch
+            {
+                bitmap.Dispose();
+                throw;
+            }
+        }
+
+        private void UpdateThemeProgressBar(uint done, uint total, bool running)
+        {
+            if (!running || total == 0)
+            {
+                if (themeProgressIsShowing && themeProgressPage != null &&
+                    themeProgressBar != null)
+                {
+                    try
+                    {
+                        themeProgressPage.SetControlRect(themeProgressBar,
+                            new Rectangle(1000, 293, 394, 14));
+                    }
+                    catch (Exception ex)
+                    {
+                        themeProgressInitFailed = true;
+                        AppendMappingUpdateLog("THEME PROGRESS: hide failed: " + ex);
+                    }
+                }
+                themeProgressIsShowing = false;
+                themeProgressLastPercent = themeProgressLastTrackWidth = themeProgressLastY = -1;
+                return;
+            }
+            if (!EnsureThemeProgressBar()) return;
+            try
+            {
+                Size size = view.ClientArea;
+                int dx = Math.Max(0, size.Width - 430);
+                int dy = Math.Max(0, size.Height - 326);
+                int width = 394 + dx;
+                int y = 293 + dy;
+                int percent = (int)Math.Round(100.0 * Math.Min(done, total) / total);
+                if (percent < 0) percent = 0;
+                if (percent > 100) percent = 100;
+
+                if (!themeProgressIsShowing || themeProgressLastPercent != percent ||
+                    themeProgressLastTrackWidth != width)
+                {
+                    Bitmap bitmap = GetThemeProgressBitmap(width, percent);
+                    themeProgressBar.Image = new ACImage(bitmap,
+                        ACImage.eACImageDrawOptions.DrawStretch);
+                    // Four compact checkpoints help distinguish native queue
+                    // progress from a VVS redraw problem during in-game tests.
+                    if (themeProgressLastPercent != percent && percent > 0 &&
+                        percent % 25 == 0)
+                        AppendMappingUpdateLog("THEME PROGRESS: " + percent +
+                            "% (" + done + "/" + total + ")");
+                }
+                if (!themeProgressIsShowing || themeProgressLastTrackWidth != width ||
+                    themeProgressLastY != y)
+                    themeProgressPage.SetControlRect(themeProgressBar,
+                        new Rectangle(18, y, width, 14));
+
+                themeProgressLastPercent = percent;
+                themeProgressLastTrackWidth = width;
+                themeProgressLastY = y;
+                themeProgressIsShowing = true;
+            }
+            catch (Exception ex)
+            {
+                // Optional graphics must never interfere with texture swapping.
+                themeProgressInitFailed = true;
+                AppendMappingUpdateLog("THEME PROGRESS: update failed: " + ex);
+            }
+        }
+
+        private void FinishQueuedThemeIfReady()
+        {
+            if (!nativeReady) return;
+            uint processed, total;
+            int queueState = NativeBridge.GetThemeQueueState(out processed, out total);
+            if (queueState == 1)
+            {
+                UpdateThemeProgressBar(processed, total, true);
+                return;
+            }
+            UpdateThemeProgressBar(0, 0, false);
+            if (queuedThemePack == null && !queuedThemeRestore) return;
+
+            InstalledPack finishedPack = queuedThemePack;
+            string sourcePng = queuedThemeSourcePng;
+            bool wasAuto = queuedAutoApply;
+            bool wasRestore = queuedThemeRestore;
+            queuedThemePack = null;
+            queuedThemeSourcePng = String.Empty;
+            queuedThemeRestore = false;
+            queuedAutoApply = false;
+
+            bool success = queueState == 2;
+            try
+            {
+                if (wasRestore)
+                {
+                    if (success)
+                    {
+                        activePackInstallId = String.Empty;
+                        activeThemeDisplayName = String.Empty;
+                        activeThemeSourcePath = String.Empty;
+                        // Reset the selected directory only after native has
+                        // finished writing every vanilla surface.
+                        NativeBridge.SetReplacementDirectory(PackManager.EmptyThemeDirectory);
+                        SetStatus("Default theme restored.");
+                    }
+                    else SetStatus("Restore incomplete. Check theme_changes.log.");
+                }
+                else if (success && finishedPack != null)
+                {
+                    themeNeedsLoginRefresh = false;
+                    activePackInstallId = finishedPack.InstallId;
+                    activeThemeDisplayName = finishedPack.Name;
+                    activeThemeSourcePath = sourcePng;
+                    PackManager.SaveLastSelectedInstallId(finishedPack.InstallId);
+                    if (!String.IsNullOrWhiteSpace(sourcePng))
+                        RememberSuccessfullyAppliedPng(sourcePng);
+                    SetStatus((wasAuto ? "Auto applied " : "Applied ") +
+                        finishedPack.Name + " (" + processed + " textures processed).");
+                    if (wasAuto)
+                        AppendMappingUpdateLog("AUTO-APPLY queued operation succeeded: " + sourcePng);
+                }
+                else
+                {
+                    // Native attempted rollback to the previous theme.
+                    // It may fall back to Vanilla if recovery wasn't possible.
+                    if (NativeBridge.GetActiveMode() != 1)
+                    {
+                        activePackInstallId = String.Empty;
+                        activeThemeDisplayName = String.Empty;
+                        activeThemeSourcePath = String.Empty;
+                    }
+                    if (wasAuto)
+                    {
+                        DisableAutoApplyAfterFailure();
+                        AppendMappingUpdateLog("AUTO-APPLY native queue failed. Check " +
+                            "%LOCALAPPDATA%\\ACCustoms\\Logs\\theme_changes.log");
+                        SetStatus("Auto Apply failed and was disabled. See Logs.");
+                    }
+                    else SetStatus("Theme switch incomplete. See theme_changes.log.");
+                }
+                UpdateCurrentUiText();
+                RefreshTemplateStatus();
+                RefreshThemesTab();
+            }
+            catch (Exception ex)
+            {
+                AppendMappingUpdateLog("THEME QUEUE completion error: " + ex);
+                if (wasAuto) DisableAutoApplyAfterFailure();
+                SetStatus("Theme completed, but plugin status update failed. Check Logs.");
+            }
+            finally
+            {
+                if (wasAuto)
+                {
+                    // Keep the crash marker throughout the ENTIRE native queue.
+                    try { File.Delete(AutoApplyCrashMarkerPath); }
+                    catch (Exception ex) { AppendMappingUpdateLog("AUTO-APPLY marker cleanup: " + ex.Message); }
+                }
+            }
+        }
+
         private void Core_RenderFrame(object sender, EventArgs e)
         {
             // A background compiler never touches VVS or native hooks. Consume its
             // completion exactly once here, on the normal Decal render thread.
+            // All live texture writes happen here on Decal's render callback.
+            // No worker thread touches AC's renderer.
+            if (nativeReady) NativeBridge.PumpThemeQueue();
+            FinishQueuedThemeIfReady();
             FinishTemplateBuildIfReady();
             FinishMappingUpdateWorkers();
             FinishPluginUpdateWorkers();
             FinishThemeWorkers();
             FinishTemplateDownload();
+            if (autoApplyAfterLoginUtc != DateTime.MaxValue &&
+                DateTime.UtcNow >= autoApplyAfterLoginUtc)
+            {
+                autoApplyAfterLoginUtc = DateTime.MaxValue; // at most once per login
+                TryAutoApplyAfterLogin();
+            }
             if (DateTime.UtcNow >= nextThemeRetryUtc && !updateShuttingDown)
             {
                 nextThemeRetryUtc = DateTime.MaxValue;
@@ -1586,6 +2095,8 @@ namespace ACCustoms
             TryNotebookControlRect("AdvancedPluginCheck", 205 + dx, 173, 207, 32);
             TryNotebookControlRect("AdvancedMappingVersion", 18, 219 + dy, 394 + dx, 22);
             TryNotebookControlRect("AdvancedFooter", 18, 246 + dy, 394 + dx, 30);
+            TryNotebookControlRect("AdvancedAutoApplyLabel", 18, 286 + dy, 274 + dx, 24);
+            TryNotebookControlRect("AdvancedAutoApplyToggle", 322 + dx, 281 + dy, 90, 28);
 
             // Plugin Update: separately gated by GitHub's *plugin* version.
             if (viewHasPluginUpdateTab)
@@ -2219,6 +2730,8 @@ namespace ACCustoms
 
         private void SelectThemePng(string file)
         {
+            if (!applyingLoginTheme)
+                autoApplyAfterLoginUtc = DateTime.MaxValue; // manual selection wins
             selectedTemplatePng = System.IO.Path.GetFullPath(file);
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(TemplateSourceSettingsPath));
             File.WriteAllText(TemplateSourceSettingsPath, selectedTemplatePng);
@@ -2886,24 +3399,21 @@ namespace ACCustoms
             return true;
         }
 
-        private void ApplyGeneratedTemplate_Click()
+        private bool ApplyGeneratedTemplate_Click()
         {
             try
             {
-                if (!CheckGeneratedTemplateReady()) return;
+                if (!CheckGeneratedTemplateReady()) return false;
                 InstalledPack generated = ThemeCache.GetPack(selectedTemplatePng, selectedMappingJson);
                 if (!File.Exists(System.IO.Path.Combine(generated.RootDirectory, "manifest.json")) ||
                     !Directory.Exists(generated.TexturesDirectory))
                 {
                     SetStatus("Cached textures are missing. Regenerate textures.");
-                    return;
+                    return false;
                 }
-                ApplyInstalledPack(generated);
-                if (String.Equals(activePackInstallId, generated.InstallId, StringComparison.Ordinal) &&
-                    nativeReady && NativeBridge.GetActiveMode() == 1)
-                    activeThemeSourcePath = System.IO.Path.GetFullPath(selectedTemplatePng);
+                return ApplyInstalledPack(generated, selectedTemplatePng);
             }
-            catch (Exception ex) { SetStatus("Apply theme error: " + ex.Message); }
+            catch (Exception ex) { SetStatus("Apply theme error: " + ex.Message); return false; }
         }
 
         private void RefreshInstalledPacks(string preferredInstallId)
@@ -2971,21 +3481,13 @@ namespace ACCustoms
             if (!nativeReady || String.IsNullOrEmpty(activePackInstallId))
                 return true;
 
-            bool restored = NativeBridge.RestoreVanilla();
-            if (!restored)
+            if (NativeBridge.IsThemeQueueBusy() || queuedThemeRestore) return false;
+            bool accepted = NativeBridge.QueueRestoreVanilla();
+            if (accepted)
             {
-                UpdateCurrentUiText();
-                return false;
+                queuedThemeRestore = true;
             }
-
-            activePackInstallId = String.Empty;
-            activeThemeDisplayName = String.Empty;
-            activeThemeSourcePath = String.Empty;
-            if (resetToEmptyDirectory)
-                NativeBridge.SetReplacementDirectory(PackManager.EmptyThemeDirectory);
-
-            UpdateCurrentUiText();
-            return true;
+            return accepted;
         }
 
         private void ThemeChoice_Change(object sender, EventArgs e)
@@ -3060,9 +3562,11 @@ namespace ACCustoms
                             SetStatus("Restoring AC Default before updating active pack...");
                             if (!RestoreActiveThemeInternal(true))
                             {
-                                SetStatus("Could not safely restore AC Default; import cancelled");
+                                SetStatus("Could not queue a safe restore; import cancelled");
                                 return;
                             }
+                            SetStatus("Restoring previous theme. Retry import after it finishes.");
+                            return;
                         }
                     }
 
@@ -3098,71 +3602,63 @@ namespace ACCustoms
             catch (Exception ex) { SetStatus("Apply error: " + ex.Message); }
         }
 
-        private void ApplyInstalledPack(InstalledPack selected)
+        private bool ApplyInstalledPack(InstalledPack selected, string sourcePng = null)
         {
+            if (!applyingLoginTheme)
+                autoApplyAfterLoginUtc = DateTime.MaxValue; // manual Apply wins
             if (!nativeReady)
             {
                 SetStatus("Native engine is not ready");
-                return;
+                return false;
             }
             if (IsTemplateBuildRunning())
             {
                 SetStatus("Wait for texture generation to finish before applying a theme.");
-                return;
+                return false;
             }
-            if (String.Equals(activePackInstallId, selected.InstallId, StringComparison.Ordinal) &&
+            // Across character relogs, native mode can still be 1 while AC
+            // has recreated the default UI. Never take the already-active
+            // short path when this is a scheduled login reapply.
+            if (!applyingLoginTheme && !themeNeedsLoginRefresh &&
+                !NativeBridge.IsThemeQueueBusy() &&
+                String.Equals(activePackInstallId, selected.InstallId, StringComparison.Ordinal) &&
                 NativeBridge.GetActiveMode() == 1)
             {
                 UpdateCurrentUiText();
                 SetStatus("Theme is already active.");
-                return;
+                return true;
             }
-            if (!BeginChange()) return;
+            if (!BeginChange()) return false;
 
-            // Native transition restores old DIDs and applies new DIDs under a
-            // single control lock, with rollback. Never expose a manual Default
-            // UI step between already-cached themes.
-            string previousId = activePackInstallId;
-            string previousDisplay = activeThemeDisplayName;
-            string previousSource = activeThemeSourcePath;
-            SetStatus("Switching to " + selected.Name + "...");
-            bool ok = NativeBridge.SwitchTheme(selected.TexturesDirectory);
-            if (ok && NativeBridge.GetActiveMode() == 1)
+            // The native engine queues restore + apply as ordered phases.
+            // Never commit UI metadata until the entire queue succeeds.
+            bool accepted = NativeBridge.QueueSwitchTheme(selected.TexturesDirectory);
+            if (!accepted)
             {
-                activePackInstallId = selected.InstallId;
-                activeThemeDisplayName = selected.Name;
-                activeThemeSourcePath = String.Empty;
-                PackManager.SaveLastSelectedInstallId(selected.InstallId);
-                SetStatus(selected.Name + " applied.");
+                SetStatus("Could not queue theme. A change may already be running.");
+                return false;
             }
-            else
-            {
-                // Native switch may have recovered the old theme, or fallen
-                // back to Vanilla. Do not report a new theme as active on error.
-                if (NativeBridge.GetActiveMode() == 1)
-                {
-                    activePackInstallId = previousId;
-                    activeThemeDisplayName = previousDisplay;
-                    activeThemeSourcePath = previousSource;
-                }
-                else
-                {
-                    activePackInstallId = String.Empty;
-                    activeThemeDisplayName = String.Empty;
-                    activeThemeSourcePath = String.Empty;
-                }
-                SetStatus("Theme switch failed. " +
-                    (NativeBridge.GetActiveMode() == 1 ? "Previous theme retained." : "Default UI restored."));
-            }
-            UpdateCurrentUiText();
-            RefreshTemplateStatus();
-            RefreshThemesTab();
+            queuedThemePack = selected;
+            queuedThemeSourcePng = String.IsNullOrWhiteSpace(sourcePng)
+                ? String.Empty : System.IO.Path.GetFullPath(sourcePng);
+            queuedAutoApply = applyingLoginTheme;
+            // The progress bar is the in-progress indicator. Completion and
+            // failure still provide their normal status messages.
+            SetStatus(String.Empty);
+            return true;
         }
 
         private void RestoreVanilla_Click(object sender, EventArgs e)
         {
+            autoApplyAfterLoginUtc = DateTime.MaxValue; // manual Restore wins
             try
             {
+                if (queuedThemePack != null || queuedThemeRestore ||
+                    (nativeReady && NativeBridge.IsThemeQueueBusy()))
+                {
+                    SetStatus("Theme textures are still being swapped. Please wait.");
+                    return;
+                }
                 if (!nativeReady || String.IsNullOrEmpty(activePackInstallId))
                 {
                     UpdateCurrentUiText();
@@ -3173,13 +3669,11 @@ namespace ACCustoms
                 if (!BeginChange())
                     return;
 
-                SetStatus("Restoring AC Default UI...");
                 bool ok = RestoreActiveThemeInternal(true);
                 UpdateCurrentUiText();
                 RefreshThemesTab();
-                SetStatus(ok
-                    ? "Default theme restored."
-                    : "Restore incomplete - close and restart AC if problems continue.");
+                SetStatus(ok ? String.Empty
+                    : "Could not queue restore. Check the active texture queue.");
             }
             catch (Exception ex)
             {

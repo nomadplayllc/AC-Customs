@@ -32,6 +32,9 @@ namespace ACCustoms
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate int NativeGetHoveredTexture(out uint did, out uint width, out uint height);
 
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int NativeGetThemeQueueState(out uint processed, out uint total);
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         private delegate int NativeGetHoveredTextureStack(StringBuilder buffer, uint bufferSize);
 
@@ -45,6 +48,10 @@ namespace ACCustoms
         private static NativeSetFlag setDeveloperTests;
         private static NativeSetDirectory setReplacementDirectory;
         private static NativeSetDirectory switchThemeDirectory;
+        private static NativeSetDirectory queueSwitchTheme;
+        private static NativeCall queueRestoreVanilla;
+        private static NativeCall pumpThemeQueue;
+        private static NativeGetThemeQueueState getThemeQueueState;
         private static NativeSetDirectory setCaptureDirectory;
         private static NativeSetDirectory captureUiSnapshot;
         private static NativeSetDirectory captureControlStateLinks;
@@ -91,6 +98,12 @@ namespace ACCustoms
             if (switchProc != IntPtr.Zero)
                 switchThemeDirectory = Marshal.GetDelegateForFunctionPointer(
                     switchProc, typeof(NativeSetDirectory)) as NativeSetDirectory;
+            // Queued Apply requires matching managed + native DLLs.
+            // Never silently fall back to the synchronous path.
+            queueSwitchTheme = Resolve<NativeSetDirectory>("ACCustoms_QueueSwitchTheme");
+            queueRestoreVanilla = Resolve<NativeCall>("ACCustoms_QueueRestoreVanilla");
+            pumpThemeQueue = Resolve<NativeCall>("ACCustoms_PumpThemeQueue");
+            getThemeQueueState = Resolve<NativeGetThemeQueueState>("ACCustoms_GetThemeQueueState");
             setCaptureDirectory = Resolve<NativeSetDirectory>("ACCustoms_SetCaptureDirectory");
             captureUiSnapshot = Resolve<NativeSetDirectory>("ACCustoms_CaptureUiSnapshot");
             captureControlStateLinks = Resolve<NativeSetDirectory>("ACCustoms_CaptureControlStateLinks");
@@ -155,6 +168,50 @@ namespace ACCustoms
                         "Native DLL is outdated. Rebuild ACCustoms.Native.dll to enable direct theme switching.");
                 return switchThemeDirectory(directory) != 0;
             }
+        }
+
+        // State: 0 = idle, 1 = processing, 2 = completed, 3 = failed.
+        public static int GetThemeQueueState(out uint processed, out uint total)
+        {
+            lock (Sync)
+            {
+                processed = total = 0;
+                if (module == IntPtr.Zero || getThemeQueueState == null) return 0;
+                return getThemeQueueState(out processed, out total);
+            }
+        }
+
+        public static bool QueueSwitchTheme(string directory)
+        {
+            lock (Sync)
+            {
+                EnsureLoaded();
+                return queueSwitchTheme(directory) != 0;
+            }
+        }
+
+        public static bool QueueRestoreVanilla()
+        {
+            lock (Sync)
+            {
+                EnsureLoaded();
+                return queueRestoreVanilla() != 0;
+            }
+        }
+
+        public static void PumpThemeQueue()
+        {
+            lock (Sync)
+            {
+                if (module != IntPtr.Zero && pumpThemeQueue != null)
+                    pumpThemeQueue();
+            }
+        }
+
+        public static bool IsThemeQueueBusy()
+        {
+            uint done, total;
+            return GetThemeQueueState(out done, out total) == 1;
         }
 
         public static bool SetCaptureDirectory(string directory)

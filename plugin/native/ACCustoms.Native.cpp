@@ -234,9 +234,9 @@ enum class ActiveThemeMode : std::uint32_t
     TestReplacement = 1
 };
 
-// AC Customs safe-mode rule: every process starts VANILLA.  The Decal plugin
-// may remember which pack was selected, but native replacement state is never
-// persisted across launches.  Apply must be explicitly requested each session.
+// AC Customs safe-mode rule: every process starts VANILLA. Native state is
+// never persisted. Only the managed opt-in setting may schedule an Apply after
+// LoginComplete, with a persistent crash-loop recovery marker.
 static std::atomic<ActiveThemeMode> g_ActiveThemeMode(
     ActiveThemeMode::Vanilla);
 
@@ -247,6 +247,9 @@ static std::mutex g_ACCustomsControlMutex;
 static std::atomic<bool> g_ACCustomsInitialized(false);
 static std::atomic<bool> g_ACCustomsInitializationFailed(false);
 static std::atomic<bool> g_ACCustomsApplyInProgress(false);
+// A relog can rebuild the visible desktop while native mode still says themed.
+// Force the next same-theme switch to reapply once instead of returning NOOP.
+static std::atomic<bool> g_ThemeNeedsLoginReapply(false);
 static std::atomic<bool> g_DeveloperTestsEnabled(false);
 static void* g_CoreDrawHookTarget = nullptr;
 static std::atomic<bool> g_CoreDrawDisableScheduled(false);
@@ -9476,7 +9479,7 @@ struct ApplySetStats {
     std::uint32_t filesFound=0, registered=0, applied=0;
     std::uint32_t notResident=0, retiredSurfaces=0, missingOriginal=0, incompatible=0;
     std::uint32_t readFailed=0, liveApplyFailed=0, failed=0;
-    std::uint32_t lockRetries=0, retryRecovered=0;
+    std::uint32_t lockRetries=0, retryRecovered=0, deferred=0;
     std::vector<std::string> details;
 };
 
@@ -9557,7 +9560,9 @@ static bool CaptureResidentOriginal(
     const LiveTextureEntry& entry,
     std::string* failureReason = nullptr);
 
-static ApplySetStats ApplyReplacementSet(bool useReplacement)
+static ApplySetStats ApplyReplacementSet(
+    bool useReplacement, const std::uint32_t* singleDid = nullptr,
+    bool queueNoSleep = false)
 {
     ApplySetStats st={};
 
@@ -9567,8 +9572,9 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
     // overridden in the first place.
     if (!useReplacement)
     {
-        const std::vector<std::uint32_t> appliedDids =
-            SnapshotActiveAppliedDids();
+        const std::vector<std::uint32_t> appliedDids = singleDid
+            ? std::vector<std::uint32_t>{*singleDid}
+            : SnapshotActiveAppliedDids();
         st.filesFound = static_cast<std::uint32_t>(appliedDids.size());
 
         for (const std::uint32_t did : appliedDids)
@@ -9650,7 +9656,7 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
             // Renderer lock failures can be momentary while AC is transitioning
             // a UI resource. Retry only this specific failure, and keep the
             // total wait tightly bounded so theme switching remains responsive.
-            if (!restored &&
+            if (!restored && !queueNoSleep &&
                 failureKind == LiveApplyFailureKind::RendererLockFailed)
             {
                 static constexpr int kRestoreLockRetryCount = 2;
@@ -9729,6 +9735,12 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
                 }
             }
 
+            if (queueNoSleep && failureKind == LiveApplyFailureKind::RendererLockFailed)
+            {
+                ++st.deferred;  // retry this DID on a later render frame
+                continue;
+            }
+
             ++st.liveApplyFailed;
             ++st.failed;
             st.details.push_back(
@@ -9737,6 +9749,7 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
                 (applyFailure.empty() ? std::string("live surface apply failed") : applyFailure));
         }
 
+        if (!queueNoSleep)
         WriteLog(std::string("UI SET #19: ORIGINAL")+
             " files="+std::to_string(st.filesFound)+
             " registered="+std::to_string(st.registered)+
@@ -9750,18 +9763,33 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
         return st;
     }
 
-    std::string search=ACCustomsGetReplacementDirectory()+"\\*.rgb";
-    WIN32_FIND_DATAA fd={};
-    HANDLE h=FindFirstFileA(search.c_str(), &fd);
-    if (h==INVALID_HANDLE_VALUE) {
-        WriteLog("UI SET #19: no replacement .rgb files found.");
-        return st;
+    // Enumerate once for legacy all-at-once operations. A queued operation
+    // supplies exactly one DID per frame and never scans the directory again.
+    std::vector<std::uint32_t> dids;
+    if (singleDid)
+        dids.push_back(*singleDid);
+    else
+    {
+        const std::string search = ACCustomsGetReplacementDirectory() + "\\*.rgb";
+        WIN32_FIND_DATAA fd = {};
+        HANDLE h = FindFirstFileA(search.c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            WriteLog("UI SET #19: no replacement .rgb files found.");
+            return st;
+        }
+        do
+        {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            std::uint32_t did = 0;
+            if (ParseTextureDIDFromFileName(fd.cFileName, did))
+                dids.push_back(did);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
     }
 
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        std::uint32_t did=0;
-        if (!ParseTextureDIDFromFileName(fd.cFileName,did)) continue;
+    for (const std::uint32_t did : dids)
+    {
         ++st.filesFound;
 
         LiveTextureEntry e={};
@@ -9808,7 +9836,7 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
         }
 
         const std::string path=
-            ACCustomsGetReplacementDirectory()+"\\"+fd.cFileName;
+            ACCustomsGetReplacementDirectory()+"\\"+DIDFileName(did)+".rgb";
 
         std::vector<unsigned char> bytes;
         if (!ReadBinaryFileExact(path,bytes,e.imageSize)) {
@@ -9833,7 +9861,7 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
 
         // Apply can hit the same short renderer transition as Restore. Keep the
         // retry bounded, and only retry the renderer-lock failure class.
-        if (!applied &&
+        if (!applied && !queueNoSleep &&
             failureKind == LiveApplyFailureKind::RendererLockFailed)
         {
             static constexpr int kApplyLockRetryCount = 2;
@@ -9935,15 +9963,20 @@ static ApplySetStats ApplyReplacementSet(bool useReplacement)
             }
         }
 
+        if (queueNoSleep && failureKind == LiveApplyFailureKind::RendererLockFailed)
+        {
+            ++st.deferred;  // retry this DID on a later render frame
+            continue;
+        }
+
         ++st.liveApplyFailed;
         ++st.failed;
         st.details.push_back(
             "DID=" + Hex32(did) +
             " apply failed: " +
             (applyFailure.empty() ? std::string("live surface apply failed") : applyFailure));
-    } while (FindNextFileA(h,&fd));
-
-    FindClose(h);
+    }
+    if (!queueNoSleep) // queued operations log one summary when the whole job ends
     WriteLog(std::string("UI SET #19: REPLACEMENT")+
         " files="+std::to_string(st.filesFound)+
         " registered="+std::to_string(st.registered)+
@@ -14255,6 +14288,285 @@ static std::string ACCustomsHoverStackWireText(
 }
 
 // ------------------------------------------------------------
+// Experimental frame-sliced theme changes (v1).
+// The caller owns the render tick. No timers, threads or sleeps touch D3D.
+// Keep the existing synchronous exports as compatibility fallbacks, but the
+// managed plugin uses the queue exports exclusively when present.
+// ------------------------------------------------------------
+enum class ThemeQueuePhase { None, RestoreOld, ApplyNew, RestoreNewRollback,
+    RecoverOld, RestoreOnly };
+struct ThemeQueueItem { std::uint32_t did = 0; std::uint32_t retries = 0; };
+struct ThemeQueueJob
+{
+    ThemeQueuePhase phase = ThemeQueuePhase::None;
+    ActiveThemeMode initialMode = ActiveThemeMode::Vanilla;
+    std::string previousDirectory;
+    std::string targetDirectory;
+    bool restoreOnly = false;
+    bool failed = false;
+    std::uint32_t processed = 0;
+    std::uint32_t total = 0;
+    std::uint32_t applied = 0;
+    std::uint32_t errors = 0;
+    std::uint32_t skipped = 0;
+    std::uint32_t deferred = 0;
+    DWORD started = 0;
+    std::vector<ThemeQueueItem> pending;
+    std::size_t next = 0;
+};
+static ThemeQueueJob g_ThemeQueue;
+// 0=idle, 1=processing, 2=succeeded, 3=failed. Sticky until next request.
+static std::atomic<int> g_ThemeQueueStatus(0);
+static constexpr std::uint32_t kThemeQueueTexturesPerFrame = 3;
+static constexpr DWORD kThemeQueueFrameBudgetMs = 4;
+static constexpr std::uint32_t kThemeQueueMaxLockRetries = 2;
+
+static std::vector<ThemeQueueItem> QueueReplacementDids(const std::string& directory)
+{
+    std::vector<ThemeQueueItem> items;
+    const std::string search = directory + "\\*.rgb";
+    WIN32_FIND_DATAA fd = {};
+    const HANDLE h = FindFirstFileA(search.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return items;
+    do
+    {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        std::uint32_t did = 0;
+        if (ParseTextureDIDFromFileName(fd.cFileName, did))
+            items.push_back({ did, 0 });
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    std::sort(items.begin(), items.end(), [](const ThemeQueueItem& a, const ThemeQueueItem& b) {
+        return a.did < b.did;
+    });
+    items.erase(std::unique(items.begin(), items.end(), [](const ThemeQueueItem& a, const ThemeQueueItem& b) {
+        return a.did == b.did;
+    }), items.end());
+    return items;
+}
+
+static void QueueSetPhase(ThemeQueuePhase phase)
+{
+    g_ThemeQueue.phase = phase;
+    g_ThemeQueue.next = 0;
+    g_ThemeQueue.pending.clear();
+    if (phase == ThemeQueuePhase::RestoreOld ||
+        phase == ThemeQueuePhase::RestoreOnly ||
+        phase == ThemeQueuePhase::RestoreNewRollback)
+    {
+        const auto snapshot = SnapshotActiveAppliedDids();
+        for (const auto did : snapshot)
+            g_ThemeQueue.pending.push_back({ did, 0 });
+        SetActiveThemeMode(ActiveThemeMode::Vanilla, "QUEUE_RESTORE");
+    }
+    else if (phase == ThemeQueuePhase::ApplyNew)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_ACCustomsPathMutex);
+            g_ACCustomsReplacementDirectory = g_ThemeQueue.targetDirectory;
+        }
+        Probe87LoadReplacementDidSet();
+        g_ThemeQueue.pending = QueueReplacementDids(g_ThemeQueue.targetDirectory);
+        SetActiveThemeMode(ActiveThemeMode::TestReplacement, "QUEUE_APPLY_NEW");
+    }
+    else if (phase == ThemeQueuePhase::RecoverOld)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_ACCustomsPathMutex);
+            g_ACCustomsReplacementDirectory = g_ThemeQueue.previousDirectory;
+        }
+        Probe87LoadReplacementDidSet();
+        if (g_ThemeQueue.initialMode == ActiveThemeMode::TestReplacement)
+        {
+            g_ThemeQueue.pending = QueueReplacementDids(g_ThemeQueue.previousDirectory);
+            SetActiveThemeMode(ActiveThemeMode::TestReplacement, "QUEUE_RECOVER_OLD");
+        }
+        else
+            SetActiveThemeMode(ActiveThemeMode::Vanilla, "QUEUE_ROLLBACK_VANILLA");
+    }
+    g_ThemeQueue.total += static_cast<std::uint32_t>(g_ThemeQueue.pending.size());
+    WriteLog("ACCUSTOMS QUEUE phase=" + std::to_string(static_cast<int>(phase)) +
+        " count=" + std::to_string(g_ThemeQueue.pending.size()));
+}
+
+static void QueueFinish(bool success)
+{
+    const DWORD elapsedMs = GetTickCount() - g_ThemeQueue.started;
+    if (success)
+        g_ThemeNeedsLoginReapply.store(false, std::memory_order_release);
+    Probe87QueueRootInvalidation(success && g_ThemeQueue.restoreOnly ? 8 : 9);
+    const std::string report = "QUEUE result=" + std::string(success ? "SUCCESS" : "INCOMPLETE") +
+        " processed=" + std::to_string(g_ThemeQueue.processed) +
+        " total=" + std::to_string(g_ThemeQueue.total) +
+        " applied=" + std::to_string(g_ThemeQueue.applied) +
+        " skipped=" + std::to_string(g_ThemeQueue.skipped) +
+        " errors=" + std::to_string(g_ThemeQueue.errors) +
+        " transientRetries=" + std::to_string(g_ThemeQueue.deferred) +
+        " elapsedMs=" + std::to_string(elapsedMs);
+    ACCustomsRecordThemeReport(report);
+    WriteLog("ACCUSTOMS " + report);
+    g_ThemeQueue.phase = ThemeQueuePhase::None;
+    g_ThemeQueue.pending.clear();
+    // Publish the final status only AFTER releasing the busy gate, so the
+    // managed side never sees "complete" while native is still locked.
+    g_ACCustomsApplyInProgress.store(false, std::memory_order_release);
+    g_ThemeQueueStatus.store(success ? 2 : 3, std::memory_order_release);
+}
+
+static void QueueNextPhase()
+{
+    const bool previousFailed = g_ThemeQueue.failed;
+    switch (g_ThemeQueue.phase)
+    {
+    case ThemeQueuePhase::RestoreOld:
+        g_ThemeQueue.failed = false;
+        QueueSetPhase(previousFailed ? ThemeQueuePhase::RecoverOld : ThemeQueuePhase::ApplyNew);
+        break;
+    case ThemeQueuePhase::ApplyNew:
+        if (previousFailed)
+        {
+            g_ThemeQueue.failed = false;
+            QueueSetPhase(ThemeQueuePhase::RestoreNewRollback);
+        }
+        else QueueFinish(true);
+        break;
+    case ThemeQueuePhase::RestoreNewRollback:
+        g_ThemeQueue.failed = false;
+        QueueSetPhase(ThemeQueuePhase::RecoverOld);
+        break;
+    case ThemeQueuePhase::RecoverOld:
+        // A recovery is not a successful switch, even if the old UI survives.
+        QueueFinish(false);
+        break;
+    case ThemeQueuePhase::RestoreOnly:
+        QueueFinish(!previousFailed);
+        break;
+    default: QueueFinish(false); break;
+    }
+}
+
+// This entrypoint only validates/queues; it NEVER walks every live texture.
+extern "C" __declspec(dllexport) int __cdecl ACCustoms_QueueSwitchTheme(const char* directory)
+{
+    if (!directory || !*directory ||
+        !g_ACCustomsInitialized.load(std::memory_order_acquire)) return 0;
+    const std::string target(directory);
+    const DWORD attrs = GetFileAttributesA(directory);
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY))
+        return 0;
+    // Busy guard BEFORE directory I/O. Do not scan theme files while another
+    // queue is already executing.
+    bool expected = false;
+    if (!g_ACCustomsApplyInProgress.compare_exchange_strong(expected, true,
+        std::memory_order_acq_rel)) return 0;
+    const auto dids = QueueReplacementDids(target);
+    if (dids.empty())
+    {
+        g_ACCustomsApplyInProgress.store(false, std::memory_order_release);
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_ACCustomsControlMutex);
+    if (g_ACCustomsSnapshotWriterRunning.load(std::memory_order_acquire))
+    {
+        g_ACCustomsApplyInProgress.store(false, std::memory_order_release);
+        return 0;
+    }
+    g_ThemeQueue = ThemeQueueJob{};
+    g_ThemeQueue.initialMode = GetActiveThemeMode();
+    g_ThemeQueue.previousDirectory = ACCustomsGetReplacementDirectory();
+    g_ThemeQueue.targetDirectory = target;
+    g_ThemeQueue.started = GetTickCount();
+    // A relog may have refreshed the desktop, so force a same-path reapply.
+    // For a new theme, restore the currently active DIDs across frames first.
+    const bool switchingAway = g_ThemeQueue.initialMode == ActiveThemeMode::TestReplacement &&
+        g_ThemeQueue.previousDirectory != target;
+    QueueSetPhase(switchingAway ? ThemeQueuePhase::RestoreOld : ThemeQueuePhase::ApplyNew);
+    g_ThemeQueueStatus.store(1, std::memory_order_release);
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int __cdecl ACCustoms_QueueRestoreVanilla()
+{
+    if (!g_ACCustomsInitialized.load(std::memory_order_acquire)) return 0;
+    bool expected = false;
+    if (!g_ACCustomsApplyInProgress.compare_exchange_strong(expected, true,
+        std::memory_order_acq_rel)) return 0;
+    std::lock_guard<std::mutex> lock(g_ACCustomsControlMutex);
+    if (g_ACCustomsSnapshotWriterRunning.load(std::memory_order_acquire))
+    {
+        g_ACCustomsApplyInProgress.store(false, std::memory_order_release);
+        return 0;
+    }
+    g_ThemeQueue = ThemeQueueJob{};
+    g_ThemeQueue.initialMode = GetActiveThemeMode();
+    g_ThemeQueue.previousDirectory = ACCustomsGetReplacementDirectory();
+    g_ThemeQueue.restoreOnly = true;
+    g_ThemeQueue.started = GetTickCount();
+    QueueSetPhase(ThemeQueuePhase::RestoreOnly);
+    g_ThemeQueueStatus.store(1, std::memory_order_release);
+    return 1;
+}
+
+// Called once by Core.RenderFrame; per frame the work is capped both by
+// textures and elapsed wall time. Lock contention never sleeps here.
+extern "C" __declspec(dllexport) int __cdecl ACCustoms_PumpThemeQueue()
+{
+    if (g_ThemeQueueStatus.load(std::memory_order_acquire) != 1) return 0;
+    std::lock_guard<std::mutex> lock(g_ACCustomsControlMutex);
+    const DWORD started = GetTickCount();
+    std::uint32_t count = 0;
+    while (g_ThemeQueueStatus.load(std::memory_order_acquire) == 1 &&
+           count < kThemeQueueTexturesPerFrame &&
+           (count == 0 || GetTickCount() - started < kThemeQueueFrameBudgetMs))
+    {
+        if (g_ThemeQueue.next == g_ThemeQueue.pending.size())
+        {
+            QueueNextPhase();
+            // Never start another phase in the same frame.
+            break;
+        }
+        ThemeQueueItem item = g_ThemeQueue.pending[g_ThemeQueue.next++];
+        const bool restoring = g_ThemeQueue.phase == ThemeQueuePhase::RestoreOld ||
+            g_ThemeQueue.phase == ThemeQueuePhase::RestoreNewRollback ||
+            g_ThemeQueue.phase == ThemeQueuePhase::RestoreOnly;
+        const ApplySetStats st = ApplyReplacementSet(!restoring, &item.did, true);
+        ++count;
+        if (st.deferred && item.retries < kThemeQueueMaxLockRetries)
+        {
+            ++item.retries;
+            ++g_ThemeQueue.deferred;
+            g_ThemeQueue.pending.push_back(item);
+            // Progress counts DIDs, not attempts; requeues do not change total.
+            continue;
+        }
+        ++g_ThemeQueue.processed;
+        g_ThemeQueue.applied += st.applied;
+        g_ThemeQueue.skipped += st.notResident + st.retiredSurfaces + st.incompatible;
+        if (st.failed || st.deferred)
+        {
+            g_ThemeQueue.failed = true;
+            g_ThemeQueue.errors += st.failed + st.deferred;
+            if (!st.details.empty())
+                for (const auto& detail : st.details)
+                    ACCustomsRecordThemeReport("QUEUE DID error: " + detail);
+            else
+                ACCustomsRecordThemeReport("QUEUE DID=" + Hex32(item.did) +
+                    " error=renderer lock attempts exhausted");
+        }
+    }
+    return g_ThemeQueueStatus.load(std::memory_order_acquire);
+}
+
+extern "C" __declspec(dllexport) int __cdecl ACCustoms_GetThemeQueueState(
+    std::uint32_t* done, std::uint32_t* total)
+{
+    std::lock_guard<std::mutex> lock(g_ACCustomsControlMutex);
+    if (done) *done = g_ThemeQueue.processed;
+    if (total) *total = g_ThemeQueue.total;
+    return g_ThemeQueueStatus.load(std::memory_order_acquire);
+}
+
+// ------------------------------------------------------------
 // Decal-facing native API
 // ------------------------------------------------------------
 
@@ -14268,6 +14580,7 @@ extern "C" __declspec(dllexport) int __cdecl ACCustoms_Initialize()
         return 0;
 
     g_ActiveThemeMode.store(ActiveThemeMode::Vanilla, std::memory_order_release);
+    g_ThemeNeedsLoginReapply.store(false, std::memory_order_release);
     g_Probe92ThemeGeneration.store(0, std::memory_order_release);
     g_LiveSwapStop.store(false, std::memory_order_release);
     ClearActiveAppliedDids();
@@ -14316,6 +14629,10 @@ extern "C" __declspec(dllexport) int __cdecl ACCustoms_NotifyLoginComplete()
 
     const MH_STATUS status = MH_EnableHook(g_CoreDrawHookTarget);
     const bool enabled = status == MH_OK || status == MH_ERROR_ENABLED;
+    if (enabled)
+        g_ThemeNeedsLoginReapply.store(
+            GetActiveThemeMode() == ActiveThemeMode::TestReplacement,
+            std::memory_order_release);
     WriteLog(
         std::string("ACCUSTOMS LOGIN_COMPLETE draw discovery=") +
         (enabled ? "ARMED" : "FAILED") +
@@ -14548,10 +14865,30 @@ extern "C" __declspec(dllexport) int __cdecl ACCustoms_SwitchTheme(const char* d
             const ActiveThemeMode oldMode = GetActiveThemeMode();
             if (oldMode == ActiveThemeMode::TestReplacement && previous == target)
             {
-                result = 1;
+                if (g_ThemeNeedsLoginReapply.exchange(false, std::memory_order_acq_rel))
+                {
+                    // AC has rebuilt its UI desktop after character login.
+                    // A same-directory request must refresh resident textures
+                    // and invalidate the new UI roots, not silently NOOP.
+                    // Avoid restoring stale old-desktop surfaces first.
+                    const ApplySetStats reapplied = ApplyReplacementSet(true);
+                    result = reapplied.failed == 0 ? 1 : 0;
+                    // Permit an explicit later retry if native locking failed;
+                    // the managed login scheduler itself never auto-retries.
+                    if (!result)
+                        g_ThemeNeedsLoginReapply.store(true, std::memory_order_release);
+                    WriteLog("ACCUSTOMS SWITCH login reapply=" +
+                        std::string(result ? "SUCCESS" : "FAILED") +
+                        " path=" + target +
+                        " applied=" + std::to_string(reapplied.applied) +
+                        " failed=" + std::to_string(reapplied.failed));
+                }
+                else
+                    result = 1;
             }
             else
             {
+                g_ThemeNeedsLoginReapply.store(false, std::memory_order_release);
                 // Restore every DID from the old theme, including ones not
                 // present in the new theme, BEFORE switching the lazy-load set.
                 bool restored = true;

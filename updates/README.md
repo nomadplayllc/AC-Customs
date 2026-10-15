@@ -1,7 +1,9 @@
 # Automatic Plugin Releases
 
-`latest.json` is intentionally **not** committed until the DLLs are built and
-published. The plugin checks this manifest in the public `main` branch:
+`latest.json` is the **live update pointer**. Keep the existing version
+published until the newly built, tested DLLs and their hashes are ready.
+Do not change `latest.json` to 1.5.0.0 before building the v1.5.0.0 DLLs.
+The plugin checks this manifest in the public `main` branch:
 
 `https://raw.githubusercontent.com/nomadplayllc/AC-Customs/main/updates/latest.json`
 
@@ -9,9 +11,15 @@ Run on Windows (Visual Studio with C++ build tools, Decal, VVS, .NET Framework 4
 
 1. `scripts\build_native.cmd`
 2. `scripts\build_managed.cmd`
-3. `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish_plugin_release.ps1`
-4. Review and **commit all** generated files: `updates/latest.json` and both DLLs
-   under `updates/releases/v1.4.0.0/`. Push them to the `main` branch.
+3. `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish_plugin_release.ps1 -ReleaseVersion 1.5.0.0`
+4. Review and smoke-test both freshly built DLLs. Verify the generated
+   `updates/latest.json` contains v1.5.0.0 hashes and points to existing files.
+5. **Commit/push together**: `updates/latest.json`, both DLLs under
+   `updates/releases/v1.5.0.0/`, and `zip download/ACCustoms_Plugin_v1.5.0.0.zip`.
+   The ZIP contains only the two DLLs and is used for manual download.
+
+Do **not** commit/push the manifest separately before the DLLs exist on `main`.
+Keep older release assets and the previous manual ZIP for existing links.
 
 The publishing script reads `ACCustoms.dll`'s real assembly version and
 computes SHA-256 and byte lengths. Use `-Notes @('Note one','Note two')` to

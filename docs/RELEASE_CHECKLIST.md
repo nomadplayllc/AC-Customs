@@ -67,3 +67,18 @@ Windows compilation and initial in-game testing passed. Use the following checks
 - Restart AC: vanilla remains active and the previous pack selection is remembered.
 - Log out/in and unload/reload: no duplicate events, stale windows, or crashes.
 - Test VVS starting after AC Customs, and missing/disabled VVS; installation errors must be understandable.
+
+## v1.5.0.0 plugin update — final Windows checks
+
+- [ ] Confirm `AssemblyVersion`, `AssemblyFileVersion`, and the Win32 VERSIONINFO resource all report `1.5.0.0`.
+- [ ] Rebuild **both** `ACCustoms.Native.dll` and `ACCustoms.dll` from the updated sources; do not reuse any previous `artifacts/plugin` DLL.
+- [ ] Launch AC through Decal with VVS enabled; verify the plugin icon/window and all notebook tabs display correctly.
+- [ ] With Auto Apply OFF, log into a character and confirm the Classic UI remains untouched.
+- [ ] Manually Apply a PNG theme; confirm the progress bar fills smoothly then disappears and texture switching stays responsive.
+- [ ] Restore Classic UI, switch between two themes and relog; confirm no leftover/missing textures.
+- [ ] Enable Auto Apply, relog and restart AC; confirm it applies the *last successfully applied* theme after `LoginComplete` (no intentional delay).
+- [ ] Close AC by Alt+F4 and the window X after a completed swap; confirm Auto Apply remains enabled on next launch.
+- [ ] Confirm an interrupted Auto Apply queue disables Auto Apply on the next launch, preventing a repeated crash loop.
+- [ ] Run `scripts\publish_plugin_release.ps1 -ReleaseVersion 1.5.0.0` and inspect generated SHA-256 hashes, two DLLs and two-file ZIP.
+- [ ] Commit/push `updates/latest.json`, `updates/releases/v1.5.0.0/` and `zip download/ACCustoms_Plugin_v1.5.0.0.zip` **together**, after tests.
+- [ ] Install v1.4.0.0 in a separate test environment, use the in-plugin updater, exit AC and confirm both installed DLLs update to the new release.
